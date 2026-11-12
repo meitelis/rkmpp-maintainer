@@ -88,6 +88,8 @@ python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base
 
 This starts from the actual pre-upgrade fork, reconciles upstream changes, lets Ornith inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
 
+The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicate observations or twelve actions without an edit, and during the final two turns, the model must edit already-read source, finish its review, or report a specific blocker. A completed review still runs every source check and build; a blocker fails the job and preserves its evidence. These controls prevent the earlier read-only loop from spending all 24 turns revisiting files, but do not establish that a real upgrade will pass.
+
 The model gets four CPU threads, a 12 GiB memory ceiling and 16K context. Thinking is capped at 1,024 tokens per turn, with a 4,096-token output budget. The publisher's coding sampling settings are temperature 0.6, top-p 0.95 and top-k 20. llama.cpp separates thinking from the final schema-constrained JSON action; only that action enters the editing loop/transcript. The model unloads before tests and compilation. External `MODEL_ENDPOINT` servers must supply compatible JSON and reasoning handling and manage their own memory/lifetime. NPU operation remains unvalidated.
 
 ## Enable monitoring in Portainer
