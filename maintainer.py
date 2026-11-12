@@ -291,7 +291,6 @@ def main():
         # Keep the Portainer service available for Console jobs without owning the job lock.
         print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
         while True:
-            failed = False
             time.sleep(60)
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
@@ -325,6 +324,7 @@ def main():
                 raise SystemExit(1)
             return
         while True:
+            failed = False
             records = discover(workspace)
             print(json.dumps(records), flush=True)
             if args.action == "once" or (args.action == "watch" and os.environ.get("AUTO_UPDATE") == "true"):
