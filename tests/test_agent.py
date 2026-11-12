@@ -38,11 +38,12 @@ class FileTests(unittest.TestCase):
     def test_real_tool_loop_edits_only_source(self):
         actions = iter([{"action":"read", "path":"go-vod/source.go"},
                         {"action":"replace", "path":"go-vod/source.go", "old":"old", "new":"new"},
-                        {"action":"finish", "summary":"Updated source"}])
+                        {"action":"finish", "summary":"Updated source", "review_complete":True, "blockers":[]}])
         summary = run_agent(self.root, self.root, "upgrade", lambda _: "", "http://local",
                             "memories", self.root / "transcript.jsonl",
                             responder=lambda *_: json.dumps(next(actions)))
-        self.assertEqual(summary, "Updated source")
+        self.assertEqual(summary["summary"], "Updated source")
+        self.assertEqual(summary["source_edits"], 1)
         self.assertEqual(self.file.read_text(), "return new\n")
 
     def test_bad_model_output_is_bounded(self):
