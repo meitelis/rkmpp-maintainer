@@ -203,7 +203,8 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
                 if previous and previous[0] == digest:
                     duplicates += 1
                     result = (f"Already observed unchanged output at turn {previous[1]}. "
-                              "Use a new page/path, replace source, finish the review, or report a blocker.")
+                              "Use a new page/path, replace source, finish the review, or report a blocker.\n"
+                              + result)
                     outcome = "duplicate"
                     print(f"Controller: duplicate {kind} {name}; unchanged since turn {previous[1]}", flush=True)
                 else:

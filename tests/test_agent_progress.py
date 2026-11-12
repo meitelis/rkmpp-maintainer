@@ -58,6 +58,19 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(all(x["result"] == "observed" for x in progress["observations"]))
         self.assertLess(len(self.calls[-1]), 26)  # Most raw read results have left the context.
 
+    def test_old_page_is_still_available_for_an_exact_edit_when_reread(self):
+        self.source.write_text("\n".join(f"line {i}" for i in range(500)))
+        actions = [{"action": "read", "path": "go-vod/source.go", "start": 1 + 80*i}
+                   for i in range(5)]
+        self.run_actions(actions + [
+            {"action": "read", "path": "go-vod/source.go"},
+            {"action": "replace", "path": "go-vod/source.go", "old": "line 0\n", "new": "updated\n"},
+            {"action": "finish", "summary": "Updated source"}
+        ])
+        self.assertIn("Already observed unchanged output", self.calls[6][-1]["content"])
+        self.assertIn("1: line 0", self.calls[6][-1]["content"])
+        self.assertTrue(self.source.read_text().startswith("updated\n"))
+
     def test_real_edit_resets_the_stall_and_updated_file_can_be_read(self):
         read = {"action": "read", "path": "go-vod/source.go"}
         self.run_actions([read, read, read,
