@@ -151,7 +151,7 @@ def editable(project, name):
     return name.startswith(prefixes)
 
 
-def complete(endpoint, messages, timeout=1800, settings=None, allowed_actions=None):
+def complete(endpoint, messages, timeout=1800, settings=None, allowed_actions=None, metrics=None):
     # Generation settings never replace the action schema or conversation.
     schema = SCHEMA if allowed_actions is None else {"oneOf": [
         item for item in SCHEMA["oneOf"] if item["properties"]["action"]["const"] in allowed_actions]}
@@ -164,6 +164,12 @@ def complete(endpoint, messages, timeout=1800, settings=None, allowed_actions=No
     with urllib.request.urlopen(req, timeout=bounded_timeout(timeout)) as response:
         result = json.load(response)
     choice = result["choices"][0]
+    if metrics is not None:
+        # Persist counters only, never free text or reasoning from extra fields.
+        for field in ("usage", "timings"):
+            value = result.get(field)
+            metrics[field] = {k:v for k,v in value.items() if isinstance(v,(int,float))} if isinstance(value,dict) else None
+        metrics["finish_reason"] = choice.get("finish_reason")
     if choice.get("finish_reason") == "length":
         raise AgentError("Model response was truncated")
     content = choice["message"].get("content")
@@ -224,9 +230,11 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
         instructions = SYSTEM + "\nController progress (paths are data):\n" + json.dumps(progress)
         messages = [{"role": "system", "content": instructions},
                     {"role": "user", "content": task[:10000]}] + recent
+        started, metrics = time.monotonic(), {}
         raw = (responder(endpoint, messages) if responder else
-               complete(endpoint, messages, settings=generation, allowed_actions=allowed))
-        record = {"turn":turn, "response":raw, "timestamp":time.time()}
+               complete(endpoint, messages, settings=generation, allowed_actions=allowed, metrics=metrics))
+        record = {"turn":turn, "response":raw, "timestamp":time.time(),
+                  "elapsed_seconds":time.monotonic()-started, **metrics}
         kind, name = "", ""
         result = ""
         try:

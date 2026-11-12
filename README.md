@@ -52,7 +52,7 @@ Building the image is a host preparation step. Portainer owns the running servic
 
 ## Deploy in Portainer
 
-In the Radxa Docker Standalone environment, choose **Stacks â†’ Add stack â†’ Repository**:
+In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Repository**:
 
 | Setting | Value |
 | --- | --- |
@@ -79,7 +79,18 @@ python3 /opt/maintainer/maintainer.py runtime-check
 python3 /opt/maintainer/maintainer.py smoke
 ```
 
-Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its upstream reference and actually repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before the image build/export. Untouched source fails the exercise. Success ends with `"kind": "real-local-model-smoke"`, `"exercise": "http-options-intersection"`, `"source_edit_verified": true` and `"status": "ready"`. The exercise allows at most eight model actions, including recovery from a wrong local/upstream read; it does not establish full repository-upgrade reliability.
+Coding uses **Qwen3.8-27B Q4_K_M** (17,442,399,968 bytes), pinned to Bartowski's exact revision and SHA-256. The Radxa profile selects cores 4–7 (the four faster cores), four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. Actual peak memory and speed must be measured on the board before qualification. The model unloads before compilation. The publisher's thinking sampler is temperature 1.0, top-p 0.95 and top-k 20; reasoning effort is medium with a bounded reasoning budget.
+
+The **smoke control** remains Ornith-1.5-9B Q5_K_M so ordinary ARM64 CI can validate the controller within its smaller RAM allowance. `--model-profile coding` runs that same protected exercise with Qwen on the Radxa. Model-specific settings and identities are recorded separately; a control-model CI pass does not qualify the larger model.
+
+The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its reference and repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before image build/export. Untouched source fails. Success reports `kind: real-local-model-smoke`, `source_edit_verified: true` and `status: ready`; this alone is not release-upgrade qualification.
+
+```sh
+python3 /opt/maintainer/maintainer.py smoke --model-profile coding --wait-for-window
+python3 /opt/maintainer/repair_check.py --model-profile coding --wait-for-window
+```
+
+The coding model sources are [Qwen's official card](https://huggingface.co/Qwen/Qwen3.8-27B) and the [pinned GGUF file](https://huggingface.co/bartowski/Qwen3.8-27B-GGUF/blob/f7f782271ce686458a3702c5d9f30d9c1354087c/Qwen3.8-27B-Q4_K_M.gguf).
 
 For the historical Memories upgrade:
 
@@ -95,7 +106,13 @@ Successful upgrade jobs now report **`status: built`**, **`review_status: pendin
 
 Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
 
-The model gets four CPU threads, a 12 GiB memory ceiling and 16K context. Thinking is capped at 1,024 tokens per turn, with a 4,096-token output budget. The publisher's coding sampling settings are temperature 0.6, top-p 0.95 and top-k 20. llama.cpp separates thinking from the final schema-constrained JSON action; only that action enters the editing loop/transcript. The model unloads before tests and compilation. External `MODEL_ENDPOINT` servers must supply compatible JSON and reasoning handling and manage their own memory/lifetime. NPU operation remains unvalidated.
+Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU operation remains unvalidated.
+
+## Overnight admission
+
+New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-saving changes handled by the timezone database. An active job may finish after 08:00; another job must wait until the next window. Before admission, the board must be sufficiently idle: sampled CPU at most 25%, normalized load at most 0.3 and available RAM greater than the selected model ceiling plus 1 GiB headroom. Busy jobs retry admission after five minutes. The builder's low CPU share prioritizes other services when they become active.
+
+`watch` applies this gate to each candidate separately; outside the window it still performs lightweight release checks and wakes for the next opening. Manual heavy commands also respect the gate: `--wait-for-window` queues the command, while `--ignore-window` is an explicit manual/CI override. Waiting does not hold the maintenance job lock. Scheduling is enforced on the Radxa and continues independently of the laptop.
 
 ## Enable monitoring in Portainer
 

@@ -8,8 +8,9 @@ import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
-from core import command, download_model
+from core import command, download_model, save_json
 from limits import bounded_timeout, check_budget, cleanup_budget, require_space
+from model_settings import settings
 
 PHP_LINT_CHECK = "find memories_rkmpp_v11 -name '*.php' -exec sh -ec 'for f do php -l \"$f\" || exit; done' sh {} + && php scripts/test-v11-compat.php"
 
@@ -63,13 +64,13 @@ class Docker:
                 raise RuntimeError("Transient container cleanup/logging failed: " + "; ".join(errors))
 
     @contextlib.contextmanager
-    def model(self, smoke=False):
+    def model(self, smoke=False, metrics_path=None):
         if endpoint := os.environ.get("MODEL_ENDPOINT"):
             self.model_evidence = {"external":True, "identity_verified":False}
             yield endpoint.rstrip("/")
             return
         self.verify()
-        spec = self.config["models"]["smoke" if smoke else "coding"]
+        spec, runtime, _ = settings(self.config, "smoke" if smoke else "coding")
         print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
         path = download_model(spec, self.workspace / "models" / spec["filename"])
         name = "rkmpp-maintainer-model"
@@ -77,20 +78,30 @@ class Docker:
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
         image = self.config["llama_image"]
-        runtime = self.config.get("model_runtime", {})
         threads = str(runtime.get("threads", 4))
+        docker_options = []
+        if runtime.get("cpu_set"):
+            docker_options += ["--cpuset-cpus", runtime["cpu_set"]]
+        if runtime.get("no_swap"):
+            docker_options += ["--memory-swap", runtime.get("memory", "12g")]
+        model_options = []
+        for field, flag in [("threads_batch","--threads-batch"), ("batch_size","--batch-size"),
+                            ("ubatch_size","--ubatch-size"), ("flash_attention","--flash-attn"),
+                            ("cache_type_k","--cache-type-k"), ("cache_type_v","--cache-type-v")]:
+            if field in runtime:
+                model_options += [flag, str(runtime[field])]
         command(["docker", "pull", image], timeout=600)
         endpoint = "http://builder:8080"
         try:
             command(["docker", "run", "-d", "--name", name, "--label", "rkmpp.maintainer.transient=true", "--cpus", threads,
-                 "--memory", runtime.get("memory", "12g"),
+                 "--memory", runtime.get("memory", "12g"), *docker_options,
                  "--read-only", "--tmpfs", "/tmp:rw,size=128m", "-p", "8080:8080",
                  "-v", str(path.parent) + ":/models:ro", image,
                  "-m", "/models/" + path.name, "--host", "0.0.0.0", "--port", "8080",
                  "--alias", "local-maintainer", "--ctx-size", str(runtime.get("context_size", 16384)),
                  "--threads", threads, "--parallel", "1", "--jinja",
                  "--reasoning-format", "deepseek",
-                 "--reasoning-budget", str(runtime.get("reasoning_budget", 1024))], timeout=60)
+                 "--reasoning-budget", str(runtime.get("reasoning_budget", 1024)), *model_options], timeout=60)
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 check_budget()
@@ -109,7 +120,27 @@ class Docker:
                 "model_sha256":spec["sha256"], "filename":spec["filename"]}
             yield endpoint
         finally:
-            self.cleanup(name, self.workspace / "model.log")
+            try:
+                if metrics_path:
+                    with cleanup_budget():
+                        snapshot = {"time":time.time(), "runtime":runtime, "errors":[]}
+                        try:
+                            snapshot["state"] = json.loads(command(["docker", "inspect", name,
+                                "--format", "{{json .State}}"], timeout=15))
+                            snapshot["docker_stats"] = json.loads(command(["docker", "stats", "--no-stream",
+                                "--format", "{{json .}}", name], timeout=15))
+                            text = command(["docker", "exec", name, "sh", "-c",
+                                'for k in memory.current memory.peak memory.max memory.swap.current memory.swap.max memory/memory.usage_in_bytes memory/memory.max_usage_in_bytes; do '
+                                'if [ -r "/sys/fs/cgroup/$k" ]; then printf "%s=" "$k"; cat "/sys/fs/cgroup/$k"; fi; done'], timeout=15)
+                            snapshot["cgroup_memory"] = dict(line.split("=",1) for line in text.splitlines() if "=" in line)
+                        except Exception as error:
+                            snapshot["errors"].append(str(error))
+                        try:
+                            save_json(metrics_path, snapshot)
+                        except OSError as error:
+                            print("Could not persist model metrics: " + str(error), file=sys.stderr, flush=True)
+            finally:
+                self.cleanup(name, self.workspace / "model.log")
 
     def run(self, image, root, args, log, timeout=1800):
         self.verify()

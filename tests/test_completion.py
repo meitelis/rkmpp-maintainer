@@ -9,6 +9,16 @@ from agent import AgentError, SCHEMA, complete, run_agent
 
 
 class CompletionTests(unittest.TestCase):
+    def test_performance_metrics_persist_counters_without_reasoning_text(self):
+        data={"choices":[{"finish_reason":"stop","message":{"content":'{"action":"list"}'}}],
+              "usage":{"completion_tokens":12,"reasoning_content":"private analysis"},
+              "timings":{"predicted_n":12,"predicted_ms":1000,"analysis":"private analysis"}}
+        metrics={}
+        with patch("agent.urllib.request.urlopen",return_value=io.BytesIO(json.dumps(data).encode())):
+            complete("http://local",[],metrics=metrics)
+        self.assertEqual(metrics["usage"],{"completion_tokens":12})
+        self.assertNotIn("private analysis",json.dumps(metrics))
+
     def response(self, content, finish_reason="stop", **extra):
         return io.BytesIO(json.dumps({"choices": [{"finish_reason": finish_reason,
                             "message": {"content": content, **extra}}]}).encode())

@@ -21,6 +21,8 @@ from runner import Docker
 from limits import job_budget, require_space
 from evidence import record_runtime, save_manifest
 from qualification import runtime_checks
+from model_settings import settings
+from schedule import admission, wait_for_window
 
 HERE = Path(__file__).resolve().parent
 
@@ -125,7 +127,8 @@ def review_targets(project, root, changes):
     return {"read":list(dict.fromkeys(local)), "diff":list(dict.fromkeys([*paths, *runtime]))}
 
 
-def run_job(project, config, workspace, target, base_ref="main", source_version=None, publish_code=False, no_agent=False):
+def run_job(project, config, workspace, target, base_ref="main", source_version=None, publish_code=False, no_agent=False,
+            model_profile="coding"):
     job = workspace / "jobs" / (project + "-" + target + "-" + uuid.uuid4().hex[:8])
     job.mkdir(parents=True)
     result = {"project": project, "target": target, "job": str(job), "status": "preparing",
@@ -134,7 +137,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
               "agent_review": {"review_complete": False, "assessment": "skipped" if no_agent else "not-run"}}
     phase(job, result, "preflight")
     try:
-        save_manifest(job, config, HERE)
+        save_manifest(job, config, HERE, smoke=model_profile == "smoke")
         with job_budget(config, workspace):
             docker = Docker(config, workspace)
             docker.verify()
@@ -155,12 +158,12 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
                                               "attempt": attempt + 1}
                     # Model lifetime ends before compiler/build memory is needed.
-                    with docker.model() as endpoint:
+                    with docker.model(smoke=model_profile == "smoke", metrics_path=job / f"model-runtime-{attempt}.json") as endpoint:
                         record_runtime(job, docker)
                         review = run_agent(root, upstream, task + "\nLast check failures:\n" + errors[-10000:],
                             lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
                             project, job / "agent.jsonl", turns=config["agent_turns"],
-                            generation=config.get("generation"),
+                            generation=settings(config, model_profile)[2],
                             required_observations=review_targets(project, root, changes))
                         result["agent_review"] = review
                         save_json(job / "agent-review.json", review)
@@ -221,7 +224,7 @@ def discover(workspace):
     return records
 
 
-def smoke(config, workspace):
+def smoke(config, workspace, model_profile="smoke"):
     """Require a model repair; retain the outcome and error even when it fails."""
     job = workspace / "jobs" / ("smoke-" + uuid.uuid4().hex[:8])
     job.mkdir(parents=True)
@@ -229,7 +232,7 @@ def smoke(config, workspace):
               "exercise":"http-options-intersection", "source_edit_verified":False}
     phase(job, result, "preflight")
     try:
-        save_manifest(job, config, HERE, smoke=True)
+        save_manifest(job, config, HERE, smoke=model_profile == "smoke")
         with job_budget(config, workspace):
             root, upstream = job / "source", job / "upstream"
             source = create_fixture(root, upstream)
@@ -242,12 +245,12 @@ def smoke(config, workspace):
                     "Use action upstream with path go-vod/http_options.py for the reference. "
                     "Do not change tests. Finish only after completing the repair; otherwise report a blocker.")
             phase(job, result, "model-repair")
-            with docker.model(smoke=True) as endpoint:
+            with docker.model(smoke=model_profile == "smoke", metrics_path=job / "model-runtime.json") as endpoint:
                 record_runtime(job, docker)
                 review = run_agent(root, upstream, task,
                     lambda _: "".join(difflib.unified_diff(BROKEN.splitlines(True), REFERENCE.splitlines(True))),
                     endpoint, "memories", job / "agent.jsonl", turns=8,
-                    generation=config.get("generation"), require_edit=True,
+                    generation=settings(config, model_profile)[2], require_edit=True,
                     required_observations={"read":["go-vod/http_options.py"],
                                            "upstream":["go-vod/http_options.py"]})
             if source.read_text() == BROKEN:
@@ -260,7 +263,7 @@ def smoke(config, workspace):
             docker.build("fixture", root, tag, job / "build.log")
             phase(job, result, "export")
             result.update(status="ready", source_edit_verified=True, agent_review=review,
-                model=config["models"]["smoke"], model_runtime=config.get("model_runtime", {}),
+                model=settings(config, model_profile)[0], model_runtime=settings(config, model_profile)[1],
                 external_model_endpoint=bool(os.environ.get("MODEL_ENDPOINT")), image=tag,
                 image_id=docker.export(tag, job / "image.tar"))
     except Exception as error:
@@ -283,6 +286,9 @@ def main():
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
+    parser.add_argument("--model-profile", choices=["coding", "smoke"])
+    parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
+    parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
     workspace = args.workspace.resolve()
@@ -292,6 +298,15 @@ def main():
         print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
         while True:
             time.sleep(60)
+    profile = args.model_profile or ("smoke" if args.action == "smoke" else "coding")
+    if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once", "watch"}:
+        # Reap abandoned owned workloads before judging whether enough RAM is idle.
+        with locked(workspace / "maintainer.lock"):
+            recover_jobs(workspace)
+            Docker(config, workspace).reap()
+    if args.action in {"runtime-check", "smoke", "run", "once"}:
+        if not wait_for_window(config, profile, wait=args.wait_for_window, ignore=args.ignore_window)["allowed"]:
+            raise SystemExit(2)
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
         if args.action == "runtime-check":
@@ -301,7 +316,7 @@ def main():
                 raise SystemExit(1)
             return
         if args.action == "smoke":
-            result = smoke(config, workspace)
+            result = smoke(config, workspace, model_profile=profile)
             print(json.dumps(result, indent=2))
             if result["status"] != "ready":
                 raise SystemExit(1)
@@ -318,13 +333,15 @@ def main():
             if not args.repo or not args.target:
                 parser.error("run needs --repo and --target")
             result = run_job(args.repo, config, workspace, args.target.removeprefix("v"),
-                             args.base_ref, args.source_version, args.publish, args.no_agent)
+                             args.base_ref, args.source_version, args.publish, args.no_agent, model_profile=profile)
             print(json.dumps(result, indent=2))
             if result["status"] != "built":
                 raise SystemExit(1)
             return
         while True:
             failed = False
+            deferred = False
+            delay = config.get("poll_seconds", 21600)
             records = discover(workspace)
             print(json.dumps(records), flush=True)
             if args.action == "once" or (args.action == "watch" and os.environ.get("AUTO_UPDATE") == "true"):
@@ -333,8 +350,14 @@ def main():
                 for record in records:
                     key = record["project"] + ":" + record["latest"]
                     if record["update"] and key not in state:
+                        gate = admission(config, profile) if args.action == "watch" or not args.ignore_window else {"allowed":True}
+                        if not gate["allowed"]:
+                            deferred = True
+                            print(json.dumps({"status":"deferred", "project":record["project"], **gate}), flush=True)
+                            delay = min(delay, gate.get("retry_seconds",300))
+                            continue
                         result = run_job(record["project"], config, workspace, record["latest"],
-                                         publish_code=args.publish, no_agent=args.no_agent)
+                                         publish_code=args.publish, no_agent=args.no_agent, model_profile=profile)
                         state[key] = {"status": result["status"], "job": result["job"]}
                         failed = failed or result["status"] != "built"
                         save_json(state_path, state)
@@ -342,8 +365,10 @@ def main():
             if args.action != "watch":
                 if args.action == "once" and failed:
                     raise SystemExit(1)
+                if args.action == "once" and deferred:
+                    raise SystemExit(2)
                 break
-            time.sleep(config["poll_seconds"])
+            time.sleep(max(1, delay))
 
 
 if __name__ == "__main__":

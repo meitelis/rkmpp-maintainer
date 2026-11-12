@@ -8,12 +8,14 @@ import uuid
 from pathlib import Path
 
 from agent import run_agent
-from core import save_json
+from core import command, save_json
 from evidence import record_runtime, save_manifest
 from limits import job_budget
 from maintainer import clone
 from profiles import git, validate
 from runner import Docker
+from model_settings import settings
+from schedule import wait_for_window
 
 
 # This is an independent startup contract, not a model-editable test. Direct
@@ -62,14 +64,14 @@ func TestMaintainerStartupHTTPContract(t *testing.T) {
 '''
 
 
-def real_repair(config, workspace):
+def real_repair(config, workspace, model_profile="coding"):
     job = Path(workspace) / "jobs" / ("memories-repair-" + uuid.uuid4().hex[:8])
     job.mkdir(parents=True)
     result = {"status":"preparing", "kind":"real-integration-repair-qualification", "job":str(job),
               "project":"memories", "deployment_approved":False, "source_edit_verified":False}
     save_json(job / "result.json", result)
     try:
-        save_manifest(job, config, Path(__file__).parent)
+        save_manifest(job, config, Path(__file__).parent, smoke=model_profile == "smoke")
         with job_budget(config, workspace):
             docker = Docker(config, workspace)
             docker.reap()
@@ -100,7 +102,7 @@ def real_repair(config, workspace):
                 raise RuntimeError("Known broken real source unexpectedly passed its independent startup check")
             result["phase"] = "model-repair"
             save_json(job / "result.json", result)
-            with docker.model() as endpoint:
+            with docker.model(smoke=model_profile == "smoke", metrics_path=job / "model-runtime.json") as endpoint:
                 record_runtime(job, docker)
                 review = run_agent(root, reference,
                     "Repair the missing HTTP-option capability probe in go-vod/main.go. Both configured binaries "
@@ -109,7 +111,7 @@ def real_repair(config, workspace):
                     "Read local go-vod/main.go and action upstream path go-vod/main.go. Make the smallest real source "
                     "repair, preserve all other integration behavior, and finish. Do not modify any tests.",
                     lambda _:"".join(difflib.unified_diff(broken.splitlines(True), original.splitlines(True))),
-                    endpoint, "memories", job / "agent.jsonl", turns=12, generation=config.get("generation"),
+                    endpoint, "memories", job / "agent.jsonl", turns=12, generation=settings(config, model_profile)[2],
                     required_observations={"read":["go-vod/main.go"], "upstream":["go-vod/main.go"]}, require_edit=True)
             result["phase"] = "checks-and-build"
             save_json(job / "result.json", result)
@@ -118,6 +120,8 @@ def real_repair(config, workspace):
             docker.checks("memories", root, job / "checks.log")
             tag = "local/memories-rkmpp:repair-qualified-" + job.name[-8:]
             docker.build("memories", root, tag, job / "build.log")
+            result["hardware_test_image_id"] = command(["docker","image","inspect",
+                "local/memories-rkmpp:v11-smoke","--format","{{.Id}}"],timeout=30)
             result.update(status="passed", source_edit_verified=True, image=tag,
                           image_id=docker.export(tag, job / "image.tar"), agent_review=review)
             (job / "repair.diff").write_text("".join(difflib.unified_diff(broken.splitlines(True), source.read_text().splitlines(True))))
@@ -132,11 +136,23 @@ def real_repair(config, workspace):
 
 
 if __name__ == "__main__":
+    import argparse
     import os
     from core import locked
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-profile", choices=["coding", "smoke"], default="coding")
+    parser.add_argument("--ignore-window", action="store_true")
+    parser.add_argument("--wait-for-window", action="store_true")
+    args = parser.parse_args()
     workspace = Path(os.environ.get("WORKSPACE", "/workspace"))
     config = json.loads((Path(__file__).parent / "config.json").read_text())
+    workspace.mkdir(parents=True, exist_ok=True)
+    if config.get("work_window", {}).get("enabled", False):
+        with locked(workspace / "maintainer.lock"):
+            Docker(config, workspace).reap()
+    if not wait_for_window(config, args.model_profile, wait=args.wait_for_window, ignore=args.ignore_window)["allowed"]:
+        raise SystemExit(2)
     with locked(workspace / "maintainer.lock"):
-        result = real_repair(config, workspace)
+        result = real_repair(config, workspace, model_profile=args.model_profile)
         print(json.dumps(result, indent=2))
         raise SystemExit(0 if result["status"] == "passed" else 1)

@@ -10,6 +10,23 @@ from runner import Docker
 
 
 class CoreTests(unittest.TestCase):
+    def test_larger_profile_receives_its_cpu_cache_and_swap_limits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config={"llama_image":"pinned-runtime", "model_runtime":{"memory":"12g","threads":4},
+                "models":{"coding":{"filename":"large.gguf","bytes":1,"sha256":"verified-model",
+                    "runtime":{"memory":"18g","cpu_set":"4-7","no_swap":True,"context_size":16384,
+                        "flash_attention":"on","cache_type_k":"q8_0","cache_type_v":"q8_0","ubatch_size":128}}}}
+            docker=Docker(config,temp)
+            with patch.dict(os.environ,{"MODEL_ENDPOINT":""}), patch.object(docker,"verify"), \
+                 patch("runner.download_model",return_value=Path(temp)/"models/large.gguf"), \
+                 patch("runner.command",return_value="") as invoke, patch("runner.urllib.request.urlopen") as health:
+                health.return_value.__enter__.return_value=SimpleNamespace(status=200)
+                with docker.model(): pass
+            args=next(c.args[0] for c in invoke.call_args_list if c.args[0][:2]==["docker","run"])
+            for flag,value in [("--memory","18g"),("--memory-swap","18g"),("--cpuset-cpus","4-7"),
+                               ("--cache-type-k","q8_0"),("--cache-type-v","q8_0"),("--flash-attn","on"),("--ubatch-size","128")]:
+                self.assertEqual(args[args.index(flag)+1],value)
+
     def test_stable_release_order_is_semantic(self):
         releases = [{"tag_name": "v3.9.0"}, {"tag_name":"v3.10.0"},
                     {"tag_name":"v4.0.0", "draft":True},

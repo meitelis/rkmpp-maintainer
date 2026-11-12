@@ -109,7 +109,7 @@ class JobTests(unittest.TestCase):
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
             @contextlib.contextmanager
-            def model():
+            def model(**kwargs):
                 events.append('model-loaded')
                 try: yield 'http://local'
                 finally: events.append('model-unloaded')

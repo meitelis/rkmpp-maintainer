@@ -31,11 +31,11 @@ jobs:
       - name: Build the tested controller
         run: docker compose build maintainer
       - name: Actual PHP failure propagation, broken-source rejection and Docker timeout cleanup
-        run: docker compose run --rm maintainer runtime-check
+        run: docker compose run --rm maintainer runtime-check --ignore-window
       - name: Real ARM64 local-model edit, tests, build and export
-        run: docker compose run --rm maintainer smoke
+        run: docker compose run --rm maintainer smoke --ignore-window
       - name: Real Go startup integration repair and complete Memories candidate checks
-        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/repair_check.py
+        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/repair_check.py --model-profile smoke --ignore-window
       - name: Logs and stop isolated daemon
         if: always()
         run: |
@@ -54,6 +54,7 @@ jobs:
             data/jobs/**/run-manifest.json
             data/jobs/**/agent.jsonl
             data/jobs/**/agent-review.json
+            data/jobs/**/model-runtime*.json
             data/jobs/**/error.txt
             data/jobs/**/*.log
             data/model.log

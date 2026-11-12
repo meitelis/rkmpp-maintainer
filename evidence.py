@@ -5,6 +5,7 @@ import os
 import platform
 from pathlib import Path
 from core import save_json
+from model_settings import settings
 
 
 def source_digest(directory):
@@ -17,14 +18,15 @@ def source_digest(directory):
 def manifest(config, directory, smoke=False):
     canonical = json.dumps(config, sort_keys=True).encode()
     external = bool(os.environ.get("MODEL_ENDPOINT"))
+    spec, runtime, generation = settings(config, "smoke" if smoke else "coding")
     return {"schema_version": 1, "controller_source_sha256": source_digest(directory),
             "config_sha256": hashlib.sha256(canonical).hexdigest(),
             "python": platform.python_version(), "architecture": platform.machine(),
             "external_model_endpoint": external,
             "model_identity_verified": False,
-            "model": None if external else config.get("models", {}).get("smoke" if smoke else "coding"),
-            "model_runtime": config.get("model_runtime", {}),
-            "generation": config.get("generation", {}),
+            "model": None if external else spec,
+            "model_runtime": runtime,
+            "generation": generation,
             "runtime_images": {k:v for k,v in config.items() if k.endswith("_image")},
             "limits": {k:config.get(k, default) for k,default in {
                 "job_timeout_seconds":21600, "disk_reserve_bytes":2*1024**3,
