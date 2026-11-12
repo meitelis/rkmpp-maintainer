@@ -198,7 +198,7 @@ def smoke(config, workspace):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["check", "once", "watch", "prepare", "run", "smoke"])
+    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke"])
     parser.add_argument("--repo", choices=PROJECTS)
     parser.add_argument("--target")
     parser.add_argument("--base-ref", default="main")
@@ -211,6 +211,11 @@ def main():
     config = json.loads(args.config.read_text())
     workspace = args.workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
+    if args.action == "idle":
+        # Keep the Portainer service available for Console jobs without owning the job lock.
+        print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
+        while True:
+            time.sleep(60)
     with locked(workspace / "maintainer.lock"):
         if args.action == "smoke":
             print(json.dumps(smoke(config, workspace), indent=2))

@@ -1,3 +1,4 @@
+# Development and CI only. Deploy portainer-stack.yml through Portainer on the Radxa.
 name: rkmpp-maintainer
 services:
   builder:
@@ -19,7 +20,7 @@ services:
     networks: [maintainer]
   maintainer:
     build: .
-    image: local/rkmpp-maintainer:prototype-2-ornith
+    image: local/rkmpp-maintainer:prototype-3-portainer
     restart: unless-stopped
     depends_on:
       builder:

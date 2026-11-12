@@ -1,0 +1,50 @@
+# Deploy this file from Portainer, using stack name rkmpp-maintainer.
+# Build the local maintainer image on the Radxa before deploying.
+services:
+  builder:
+    image: docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
+    privileged: true
+    restart: unless-stopped
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--label=rkmpp.maintainer=isolated", "--storage-driver=${DIND_STORAGE_DRIVER:-overlay2}"]
+    volumes:
+      - type: bind
+        source: /armbian/rkmpp-maintainer/builder
+        target: /var/lib/docker
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /armbian/rkmpp-maintainer/data
+        target: /workspace
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks: [maintainer]
+  maintainer:
+    image: local/rkmpp-maintainer:prototype-3-portainer
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      builder:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://builder:2375
+      DOCKER_TLS_CERTDIR: ""
+      AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
+    command: ["${MAINTAINER_ACTION:-idle}"]
+    volumes:
+      - type: bind
+        source: /armbian/rkmpp-maintainer/data
+        target: /workspace
+        bind:
+          create_host_path: false
+    networks: [maintainer]
+networks:
+  maintainer:

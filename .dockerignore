@@ -1,4 +1,5 @@
 data
+builder
 .env
 .git
 __pycache__
