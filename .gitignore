@@ -1,4 +1,5 @@
 data/
+builder/
 .env
 __pycache__/
 *.pyc

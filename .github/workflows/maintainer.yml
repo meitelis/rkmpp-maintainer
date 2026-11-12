@@ -20,6 +20,8 @@ jobs:
           python3 -m unittest discover -s tests -v
           python3 -m py_compile *.py
           docker compose config --quiet
+          docker compose -f portainer-stack.yml config --quiet
+          bash -n scripts/migrate-to-portainer.sh
       - name: Real ARM64 local-model edit, tests, build and export
         run: docker compose run --build --rm maintainer smoke
       - name: Logs and stop isolated daemon
