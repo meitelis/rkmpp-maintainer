@@ -2,6 +2,22 @@
   "poll_seconds": 21600,
   "repair_rounds": 3,
   "agent_turns": 24,
+  "model_runtime": {
+    "memory": "12g",
+    "context_size": 16384,
+    "threads": 4,
+    "reasoning_budget": 1024
+  },
+  "generation": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "max_tokens": 4096,
+    "chat_template_kwargs": {"enable_thinking": true},
+    "reasoning_format": "deepseek"
+  },
   "llama_image": "ghcr.io/ggml-org/llama.cpp:server@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f",
   "node_image": "node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9",
   "php_image": "php:8.4-cli@sha256:d63e8b80cd4c6cfd01cfa7c910522e299cdc7ca1a2b6d6563db48df3c17e6c55",
@@ -9,16 +25,16 @@
   "go_image": "golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9",
   "models": {
     "smoke": {
-      "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/13fb94bfda8c8cf22497dc57b78f391a9acb426a/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "filename": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "sha256": "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
-      "bytes": 4683073536
+      "url": "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/resolve/abdd624b12ebf020b767fff532ff44fe552b28c3/Ornith-1.5-9B-Q5_K_M.gguf",
+      "filename": "Ornith-1.5-9B-Q5_K_M.gguf",
+      "sha256": "e4d9634a3b6546a5c00a8680568fe1125f6c98c704ee51ae52ba07650fb4247d",
+      "bytes": 6642544576
     },
     "coding": {
-      "url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/13fb94bfda8c8cf22497dc57b78f391a9acb426a/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "filename": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-      "sha256": "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c",
-      "bytes": 4683073536
+      "url": "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/resolve/abdd624b12ebf020b767fff532ff44fe552b28c3/Ornith-1.5-9B-Q5_K_M.gguf",
+      "filename": "Ornith-1.5-9B-Q5_K_M.gguf",
+      "sha256": "e4d9634a3b6546a5c00a8680568fe1125f6c98c704ee51ae52ba07650fb4247d",
+      "bytes": 6642544576
     }
   }
 }

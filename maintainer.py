@@ -111,7 +111,8 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 with docker.model() as endpoint:
                     summary = run_agent(root, upstream, task + "\nLast check failures:\n" + errors[-10000:],
                         lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
-                        project, job / "agent.jsonl", turns=config["agent_turns"])
+                        project, job / "agent.jsonl", turns=config["agent_turns"],
+                        generation=config.get("generation"))
                     (job / "agent-summary.txt").write_text(summary + "\n")
             try:
                 validate(root)
@@ -180,11 +181,16 @@ def smoke(config, workspace):
     docker = Docker(config, workspace)
     task = "The function add(a,b) in go-vod/calc.py must add a and b, but currently subtracts. Read this file, use replace to fix that one operator, then finish. Do not change tests."
     with docker.model(smoke=True) as endpoint:
-        run_agent(root, root, task, lambda _: "", endpoint, "memories", job / "agent.jsonl", turns=10)
+        run_agent(root, root, task, lambda _: "", endpoint, "memories", job / "agent.jsonl",
+                  turns=10, generation=config.get("generation"))
     docker.checks("fixture", root, job / "checks.log")
     tag = "local/rkmpp-maintainer:smoke-" + job.name[-8:]
     docker.build("fixture", root, tag, job / "build.log")
+    spec = config["models"]["smoke"]
     result = {"status": "ready", "kind": "real-local-model-smoke", "job": str(job),
+              "model": {"filename": spec["filename"], "sha256": spec["sha256"]},
+              "model_runtime": config.get("model_runtime", {}),
+              "external_model_endpoint": bool(os.environ.get("MODEL_ENDPOINT")),
               "image": tag, "image_id": docker.export(tag, job / "image.tar")}
     save_json(job / "result.json", result)
     return result

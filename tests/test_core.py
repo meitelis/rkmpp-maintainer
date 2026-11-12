@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from core import clean_env, command, latest_release, locked, version
 from runner import Docker
@@ -43,3 +44,24 @@ class CoreTests(unittest.TestCase):
             with locked(Path(temp) / "lock"):
                 with self.assertRaisesRegex(RuntimeError, "Another"):
                     with locked(Path(temp) / "lock"): pass
+
+    def test_model_lifecycle_applies_memory_and_reasoning_budget(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = {"llama_image": "pinned-runtime", "models": {"coding": {"filename": "model.gguf", "bytes": 1}},
+                      "model_runtime": {"memory": "12g", "context_size": 16384,
+                                        "threads": 4, "reasoning_budget": 1024}}
+            docker = Docker(config, temp)
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), patch.object(docker, "verify"), \
+                 patch("runner.download_model", return_value=Path(temp) / "models/model.gguf"), \
+                 patch("runner.command", return_value="") as invoke, \
+                 patch("runner.urllib.request.urlopen") as health:
+                health.return_value.__enter__.return_value = SimpleNamespace(status=200)
+                with docker.model() as endpoint:
+                    self.assertEqual(endpoint, "http://builder:8080")
+                args = next(call.args[0] for call in invoke.call_args_list
+                            if call.args[0][:2] == ["docker", "run"])
+                for flag, value in [("--memory", "12g"), ("--ctx-size", "16384"),
+                                    ("--reasoning-format", "deepseek"), ("--reasoning-budget", "1024")]:
+                    self.assertEqual(args[args.index(flag) + 1], value)
+                self.assertEqual(invoke.call_args_list[-1].args[0],
+                                 ["docker", "rm", "-f", "rkmpp-maintainer-model"])

@@ -2,6 +2,7 @@
 import json
 import re
 import urllib.request
+from functools import partial
 from pathlib import Path
 
 def action_schema(action, fields, required=()):
@@ -92,10 +93,12 @@ def editable(project, name):
     }
 
 
-def complete(endpoint, messages, timeout=1800):
-    data = json.dumps({"model": "local-maintainer", "messages": messages,
-                       "temperature": 0, "max_tokens": 2048,
-                       "response_format": {"type": "json_object", "schema": SCHEMA}}).encode()
+def complete(endpoint, messages, timeout=1800, settings=None):
+    # Generation settings never replace the action schema or conversation.
+    payload = {"temperature": 0.6, "max_tokens": 4096, **(settings or {}),
+               "model": "local-maintainer", "messages": messages,
+               "response_format": {"type": "json_object", "schema": SCHEMA}}
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(endpoint.rstrip("/") + "/v1/chat/completions", data,
                                  {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -103,13 +106,18 @@ def complete(endpoint, messages, timeout=1800):
     choice = result["choices"][0]
     if choice.get("finish_reason") == "length":
         raise AgentError("Model response was truncated")
-    content = choice["message"]["content"]
-    if not isinstance(content, str):
-        raise AgentError("Model did not return text")
+    content = choice["message"].get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise AgentError("Model returned no action text; reasoning alone is not an edit")
+    # llama.cpp parses thinking into reasoning_content. Never execute or persist it.
+    if content.lstrip().startswith(("<think>", "</think>")):
+        raise AgentError("Unparsed reasoning in action text; check the server reasoning format")
     return content
 
 
-def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, turns=24, responder=complete):
+def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, turns=24,
+              responder=None, generation=None):
+    responder = responder or partial(complete, settings=generation)
     files = Files(root, lambda p: editable(project, p))
     official = Files(upstream, lambda _: False)
     history = []
