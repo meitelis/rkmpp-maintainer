@@ -17,3 +17,5 @@ Candidate qualification must identify exactly which revision and configuration p
 The implementation records a six-hour whole-job budget, a 2 GiB free-space reserve, build/export preflights, per-operation limits, timestamped tool outcomes and complete paginated observations. The builder has an 18 GiB ceiling and six-CPU ceiling in the production Portainer stack. Images, models, job evidence and production services are preserved.
 
 No qualification result is asserted in this document until the corresponding evidence is attached.
+
+`python3 /opt/maintainer/repair_check.py` recreates the missing FFmpeg startup probe in a disposable checkout of the current Memories fork. A protected Go AST contract must first fail for that known fault, then pass after the model repair as part of the full Go/browser/PHP/build/export pipeline. The reference is the unmodified current fork, and the result is explicitly repair-qualification evidence, not a new release or deployment approval.

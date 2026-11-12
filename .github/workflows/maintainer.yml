@@ -25,7 +25,7 @@ jobs:
   smoke:
     needs: validate
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Build the tested controller
@@ -34,6 +34,8 @@ jobs:
         run: docker compose run --rm maintainer runtime-check
       - name: Real ARM64 local-model edit, tests, build and export
         run: docker compose run --rm maintainer smoke
+      - name: Real Go startup integration repair and complete Memories candidate checks
+        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/repair_check.py
       - name: Logs and stop isolated daemon
         if: always()
         run: |

@@ -2,10 +2,24 @@
 import contextlib
 import contextvars
 import shutil
+import signal
+import threading
 import time
 from pathlib import Path
 
 _guard = contextvars.ContextVar("job_guard", default=None)
+
+
+def alarm_supported():
+    return hasattr(signal, "setitimer") and threading.current_thread() is threading.main_thread()
+
+
+def restore_alarm(handler, timer, started):
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, handler)
+    remaining = timer[0] - (time.monotonic() - started)
+    if timer[0] > 0 and remaining > 0:
+        signal.setitimer(signal.ITIMER_REAL, remaining, timer[1])
 
 
 class BudgetExceeded(RuntimeError):
@@ -46,11 +60,24 @@ def job_budget(config, workspace):
     reserve = config.get("disk_reserve_bytes", 2 * 1024**3)
     if not isinstance(seconds, (int, float)) or seconds <= 0 or reserve < 0:
         raise ValueError("Invalid job time or storage budget")
-    token = _guard.set((time.monotonic() + seconds, Path(workspace), reserve))
+    started = time.monotonic()
+    previous = _guard.get()
+    deadline = min(started + seconds, previous[0]) if previous else started + seconds
+    token = _guard.set((deadline, Path(workspace), reserve))
+    alarm = alarm_supported()
+    if alarm:
+        handler, timer = signal.getsignal(signal.SIGALRM), signal.getitimer(signal.ITIMER_REAL)
+        def expired(signum, frame):
+            raise BudgetExceeded("Job deadline exceeded")
+        signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, max(0.001, deadline - started))
     try:
         check_budget()
         yield
+        check_budget()
     finally:
+        if alarm:
+            restore_alarm(handler, timer, started)
         _guard.reset(token)
 
 
@@ -58,7 +85,14 @@ def job_budget(config, workspace):
 def cleanup_budget():
     """Cleanup has its own short command timeouts, even after the job expires."""
     token = _guard.set(None)
+    alarm = alarm_supported()
+    if alarm:
+        started = time.monotonic()
+        handler, timer = signal.getsignal(signal.SIGALRM), signal.getitimer(signal.ITIMER_REAL)
+        signal.setitimer(signal.ITIMER_REAL, 0)
     try:
         yield
     finally:
+        if alarm:
+            restore_alarm(handler, timer, started)
         _guard.reset(token)
