@@ -4,9 +4,32 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import maintainer
+from agent import AgentBlocked
 
 
 class JobTests(unittest.TestCase):
+    def test_agent_blocker_never_reaches_checks_build_export_or_publish(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), \
+                 patch('maintainer.run_agent', side_effect=AgentBlocked('Agent reported blocker: protected file')), \
+                 patch('maintainer.Docker') as cls, patch('maintainer.publish') as publish:
+                docker = cls.return_value
+                docker.model.return_value.__enter__.return_value = 'http://local'
+                result = maintainer.run_job('memories', {'repair_rounds': 3, 'agent_turns': 24},
+                                            Path(temp), '11.1.2', publish_code=True)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn('protected file', result['error'])
+                docker.checks.assert_not_called()
+                docker.build.assert_not_called()
+                docker.export.assert_not_called()
+                publish.assert_not_called()
+                docker.model.return_value.__exit__.assert_called_once()
+                self.assertTrue((Path(result['job'])/'error.txt').exists())
+
     def test_failed_checks_never_export_or_publish(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp)

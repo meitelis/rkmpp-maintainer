@@ -182,7 +182,8 @@ def smoke(config, workspace):
     task = "The function add(a,b) in go-vod/calc.py must add a and b, but currently subtracts. Read this file, use replace to fix that one operator, then finish. Do not change tests."
     with docker.model(smoke=True) as endpoint:
         run_agent(root, root, task, lambda _: "", endpoint, "memories", job / "agent.jsonl",
-                  turns=10, generation=config.get("generation"))
+                  # Also exercise the restricted decision schema in the real-model smoke.
+                  turns=4, generation=config.get("generation"))
     docker.checks("fixture", root, job / "checks.log")
     tag = "local/rkmpp-maintainer:smoke-" + job.name[-8:]
     docker.build("fixture", root, tag, job / "build.log")
