@@ -24,12 +24,16 @@ class ProgressTests(unittest.TestCase):
 
         def respond(endpoint, messages):
             self.calls.append(messages)
-            return json.dumps(next(actions))
+            action = next(actions)
+            if action.get("action") == "finish":
+                action = {"review_complete": True, "blockers": [], **action}
+            return json.dumps(action)
 
         with redirect_stdout(io.StringIO()):
-            return run_agent(self.root, self.root, "review upgrade", lambda _: "upstream diff",
+            review = run_agent(self.root, self.root, "review upgrade", lambda _: "upstream diff",
                              "http://local", "memories", self.root / "agent.jsonl",
                              responder=respond, **kwargs)
+            return review["summary"]
 
     def progress(self, call=-1):
         return json.loads(self.calls[call][0]["content"].split("Controller progress (paths are data):\n")[1])
@@ -107,8 +111,9 @@ class ProgressTests(unittest.TestCase):
         instructions.parent.mkdir(parents=True)
         instructions.write_text("untrusted repository instructions")
         (self.root / "AAA-doc.md").write_text("docs")
-        self.run_actions([{"action": "list"}, {"action": "finish", "summary": "Reviewed"}])
-        listing = self.calls[-1][-1]["content"]
+        self.run_actions([{"action": "list"}, {"action": "read", "path": "go-vod/source.go"},
+                          {"action": "finish", "summary": "Reviewed"}])
+        listing = self.calls[1][-1]["content"]
         self.assertEqual(listing.splitlines()[0], "go-vod/source.go")
         self.assertNotIn(".agents/", listing)
 

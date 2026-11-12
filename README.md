@@ -78,7 +78,7 @@ First run:
 python3 /opt/maintainer/maintainer.py smoke
 ```
 
-Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. Success ends with `"kind": "real-local-model-smoke"` and `"status": "ready"`. The fixture checks a small source edit, immutable tests, an image build and export; it does not establish real upgrade reliability.
+Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its upstream reference and actually repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before the image build/export. Untouched source fails the exercise. Success ends with `"kind": "real-local-model-smoke"`, `"exercise": "http-options-intersection"`, `"source_edit_verified": true` and `"status": "ready"`. This bounded repair test does not establish full repository-upgrade reliability.
 
 For the historical Memories upgrade:
 
@@ -88,7 +88,9 @@ python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base
 
 This starts from the actual pre-upgrade fork, reconciles upstream changes, lets Ornith inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
 
-The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicate observations or twelve actions without an edit, and during the final two turns, the model must edit already-read source, finish its review, or report a specific blocker. A completed review still runs every source check and build; a blocker fails the job and preserves its evidence. These controls prevent the earlier read-only loop from spending all 24 turns revisiting files, but do not establish that a real upgrade will pass.
+The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must edit already-read source, complete its review, or report a specific blocker. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
+
+Successful upgrade jobs now report **`status: built`**, **`review_status: pending-human-review`** and **`deployment_approved: false`**. Exit code zero means the checks/build/export completed, not that deployment was approved. `agent-review.json` records the model's self-report, actual observations and edit count. `ready` is reserved for the isolated smoke exercise. Historical replays are labeled `kind: historical-replay`: their deliberately old starting point may omit later fixes from your current branch, so they are not automatic replacements for the live service. Earlier job evidence is retained with its original result format.
 
 The model gets four CPU threads, a 12 GiB memory ceiling and 16K context. Thinking is capped at 1,024 tokens per turn, with a 4,096-token output budget. The publisher's coding sampling settings are temperature 0.6, top-p 0.95 and top-k 20. llama.cpp separates thinking from the final schema-constrained JSON action; only that action enters the editing loop/transcript. The model unloads before tests and compilation. External `MODEL_ENDPOINT` servers must supply compatible JSON and reasoning handling and manage their own memory/lifetime. NPU operation remains unvalidated.
 
@@ -112,7 +114,7 @@ Then update/redeploy the **existing stack in Portainer**, keeping its environmen
 
 ## Candidate images and publication
 
-Ready jobs save `image.tar`, `result.json`, source patches and logs. Memories also exports `memories-helper.tar.gz`. Compilation does not validate real RKMPP, browser, HDR or audio playback. Candidates are manually accepted and deployed through the existing application stacks in Portainer.
+Built jobs save `image.tar`, `result.json`, source patches, review evidence and logs. Memories also exports `memories-helper.tar.gz`. A build and a model completion claim do not validate real RKMPP, browser, HDR or audio playback. Candidates need human source review and hardware testing before manual deployment through the existing application stacks in Portainer.
 
 An explicit `run ... --publish` can create a draft PR in the relevant fork when a privately supplied GitHub token has the necessary contents, pull-request and workflow permissions. The token is not passed to model or build subprocesses. The background Portainer stack deliberately receives no token. No registry upload or automatic production deployment is implemented.
 

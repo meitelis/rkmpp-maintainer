@@ -52,10 +52,15 @@ class CompletionTests(unittest.TestCase):
             root = Path(temp)
             transcript = root / "agent.jsonl"
             settings = {"temperature": 0.6, "max_tokens": 4096}
-            with patch("agent.complete", return_value='{"action":"finish","summary":"done"}') as send:
-                self.assertEqual(run_agent(root, root, "fix", lambda _: "", "http://local",
-                                 "memories", transcript, generation=settings), "done")
+            (root / "go-vod").mkdir()
+            (root / "go-vod/file.go").write_text("source")
+            with patch("agent.complete", side_effect=[
+                    '{"action":"read","path":"go-vod/file.go"}',
+                    '{"action":"finish","summary":"done","review_complete":true,"blockers":[]}']) as send:
+                review = run_agent(root, root, "fix", lambda _: "", "http://local",
+                                   "memories", transcript, generation=settings)
+                self.assertEqual(review["summary"], "done")
             self.assertEqual(send.call_args.kwargs["settings"], settings)
-            record = json.loads(transcript.read_text())
+            record = json.loads(transcript.read_text().splitlines()[-1])
             self.assertEqual(set(record), {"turn", "response"})
             self.assertEqual(json.loads(record["response"])["action"], "finish")
