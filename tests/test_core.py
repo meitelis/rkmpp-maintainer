@@ -47,7 +47,7 @@ class CoreTests(unittest.TestCase):
 
     def test_model_lifecycle_applies_memory_and_reasoning_budget(self):
         with tempfile.TemporaryDirectory() as temp:
-            config = {"llama_image": "pinned-runtime", "models": {"coding": {"filename": "model.gguf"}},
+            config = {"llama_image": "pinned-runtime", "models": {"coding": {"filename": "model.gguf", "bytes": 1}},
                       "model_runtime": {"memory": "12g", "context_size": 16384,
                                         "threads": 4, "reasoning_budget": 1024}}
             docker = Docker(config, temp)
