@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from core import command, download_model, save_json
 from limits import bounded_timeout, check_budget, cleanup_budget, require_space
-from model_settings import settings
+from model_settings import require_model_memory, settings
 
 PHP_LINT_CHECK = "find memories_rkmpp_v11 -name '*.php' -exec sh -ec 'for f do php -l \"$f\" || exit; done' sh {} + && php scripts/test-v11-compat.php"
 
@@ -71,6 +71,7 @@ class Docker:
             return
         self.verify()
         spec, runtime, _ = settings(self.config, "smoke" if smoke else "coding")
+        memory_preflight = require_model_memory(self.config, spec, runtime)
         print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
         path = download_model(spec, self.workspace / "models" / spec["filename"])
         name = "rkmpp-maintainer-model"
@@ -79,7 +80,7 @@ class Docker:
             command(["docker", "rm", "-f", name], timeout=30)
         image = self.config["llama_image"]
         threads = str(runtime.get("threads", 4))
-        docker_options = []
+        docker_options = ["--oom-score-adj","1000"]
         if runtime.get("cpu_set"):
             docker_options += ["--cpuset-cpus", runtime["cpu_set"]]
         if runtime.get("no_swap"):
@@ -117,7 +118,7 @@ class Docker:
                 raise RuntimeError("Local model did not become ready in ten minutes")
             self.model_evidence = {"container_image_id":command(
                 ["docker", "inspect", name, "--format", "{{.Image}}"], timeout=30),
-                "model_sha256":spec["sha256"], "filename":spec["filename"]}
+                "model_sha256":spec["sha256"], "filename":spec["filename"], **memory_preflight}
             yield endpoint
         finally:
             try:

@@ -18,6 +18,7 @@ class CoreTests(unittest.TestCase):
                         "flash_attention":"on","cache_type_k":"q8_0","cache_type_v":"q8_0","ubatch_size":128}}}}
             docker=Docker(config,temp)
             with patch.dict(os.environ,{"MODEL_ENDPOINT":""}), patch.object(docker,"verify"), \
+                 patch("runner.require_model_memory",return_value={}), \
                  patch("runner.download_model",return_value=Path(temp)/"models/large.gguf"), \
                  patch("runner.command",return_value="") as invoke, patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value=SimpleNamespace(status=200)
@@ -69,6 +70,7 @@ class CoreTests(unittest.TestCase):
                                         "threads": 4, "reasoning_budget": 1024}}
             docker = Docker(config, temp)
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), patch.object(docker, "verify"), \
+                 patch("runner.require_model_memory",return_value={}), \
                  patch("runner.download_model", return_value=Path(temp) / "models/model.gguf"), \
                  patch("runner.command", side_effect=lambda args, **kwargs: "model-id" if args[:3] == ["docker", "ps", "-aq"] else "") as invoke, \
                  patch("runner.urllib.request.urlopen") as health:
