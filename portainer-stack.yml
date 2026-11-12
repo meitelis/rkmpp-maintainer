@@ -4,6 +4,8 @@ services:
   builder:
     image: docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
     privileged: true
+    mem_limit: 18g
+    cpus: 6
     restart: unless-stopped
     environment:
       DOCKER_TLS_CERTDIR: ""
@@ -30,6 +32,7 @@ services:
     image: local/rkmpp-maintainer:prototype-3-portainer
     pull_policy: never
     restart: unless-stopped
+    mem_limit: 512m
     depends_on:
       builder:
         condition: service_healthy

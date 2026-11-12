@@ -10,6 +10,16 @@ from agent import AgentBlocked, run_agent
 
 
 class JobTests(unittest.TestCase):
+    def test_once_cli_fails_when_an_attempted_candidate_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)/'config.json'
+            config.write_text('{}')
+            with patch.object(sys, 'argv', ['maintainer', 'once', '--config', str(config), '--workspace', temp]), \
+                 patch('maintainer.discover', return_value=[{'project':'memories', 'latest':'11.1.2', 'update':True}]), \
+                 patch('maintainer.run_job', return_value={'status':'failed', 'job':'failure-evidence'}):
+                with self.assertRaises(SystemExit) as stopped:
+                    maintainer.main()
+                self.assertEqual(stopped.exception.code, 1)
     def test_false_finish_cannot_build_even_when_checks_would_pass(self):
         with tempfile.TemporaryDirectory() as temp:
             def prepare(project, job, *args):

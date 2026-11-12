@@ -47,13 +47,13 @@ class CoreTests(unittest.TestCase):
 
     def test_model_lifecycle_applies_memory_and_reasoning_budget(self):
         with tempfile.TemporaryDirectory() as temp:
-            config = {"llama_image": "pinned-runtime", "models": {"coding": {"filename": "model.gguf", "bytes": 1}},
+            config = {"llama_image": "pinned-runtime", "models": {"coding": {"filename": "model.gguf", "bytes": 1, "sha256":"verified-model"}},
                       "model_runtime": {"memory": "12g", "context_size": 16384,
                                         "threads": 4, "reasoning_budget": 1024}}
             docker = Docker(config, temp)
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), patch.object(docker, "verify"), \
                  patch("runner.download_model", return_value=Path(temp) / "models/model.gguf"), \
-                 patch("runner.command", return_value="") as invoke, \
+                 patch("runner.command", side_effect=lambda args, **kwargs: "model-id" if args[:3] == ["docker", "ps", "-aq"] else "") as invoke, \
                  patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value = SimpleNamespace(status=200)
                 with docker.model() as endpoint:
@@ -64,4 +64,4 @@ class CoreTests(unittest.TestCase):
                                     ("--reasoning-format", "deepseek"), ("--reasoning-budget", "1024")]:
                     self.assertEqual(args[args.index(flag) + 1], value)
                 self.assertEqual(invoke.call_args_list[-1].args[0],
-                                 ["docker", "rm", "-f", "rkmpp-maintainer-model"])
+                                 ["docker", "rm", "-f", "model-id"])

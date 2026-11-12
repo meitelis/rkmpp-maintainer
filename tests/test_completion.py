@@ -62,5 +62,6 @@ class CompletionTests(unittest.TestCase):
                 self.assertEqual(review["summary"], "done")
             self.assertEqual(send.call_args.kwargs["settings"], settings)
             record = json.loads(transcript.read_text().splitlines()[-1])
-            self.assertEqual(set(record), {"turn", "response"})
+            self.assertTrue({"turn", "response", "timestamp", "result"}.issubset(record))
+            self.assertNotIn("reasoning_content", record)
             self.assertEqual(json.loads(record["response"])["action"], "finish")

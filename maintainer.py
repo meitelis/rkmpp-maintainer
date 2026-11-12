@@ -18,8 +18,28 @@ from core import command, http_json, latest_release, locked, save_json, version
 from profiles import PROJECTS, current_version, git, reconcile, validate
 from repair_fixture import BROKEN, REFERENCE, create_fixture
 from runner import Docker
+from limits import job_budget, require_space
+from evidence import record_runtime, save_manifest
+from qualification import runtime_checks
 
 HERE = Path(__file__).resolve().parent
+
+
+def phase(job, result, name):
+    result["phase"] = name
+    result["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    save_json(job / "result.json", result)
+    print(f"{result['updated_at']} Job {job.name}: {name}", flush=True)
+
+
+def recover_jobs(workspace):
+    # The caller holds the global lock, so no earlier process still owns a job.
+    for path in (workspace / "jobs").glob("*/result.json"):
+        result = json.loads(path.read_text())
+        if result.get("status") in {"preparing", "running"}:
+            result.update(status="interrupted", error="Previous controller stopped before completing this job",
+                          finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+            save_json(path, result)
 
 
 def github(path, data=None, method=None):
@@ -96,7 +116,13 @@ def review_targets(project, root, changes):
                 "upstream": ["lib/Service/BinExt.php"],
                 "diff": [p for p in changes if p.startswith("go-vod/")]}
     paths = [p for p in changes if (root / "overlays" / p).is_file()]
-    return {"read": ["overlays/" + p for p in paths], "diff": paths}
+    runtime = [p for p in changes if p.startswith(("server/src/", "web/src/"))
+               and not re.search(r"\.(spec|test)\.", p)]
+    local = ["upstream.json", *["overlays/" + p for p in paths]]
+    consumer = "overlays/server/src/controllers/video-stream.controller.ts"
+    if (root / consumer).is_file():
+        local.append(consumer)
+    return {"read":list(dict.fromkeys(local)), "diff":list(dict.fromkeys([*paths, *runtime]))}
 
 
 def run_job(project, config, workspace, target, base_ref="main", source_version=None, publish_code=False, no_agent=False):
@@ -106,62 +132,72 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
               "kind": "historical-replay" if base_ref != "main" or source_version else "release-candidate",
               "review_status": "pending-human-review", "deployment_approved": False,
               "agent_review": {"review_complete": False, "assessment": "skipped" if no_agent else "not-run"}}
-    save_json(job / "result.json", result)
+    phase(job, result, "preflight")
     try:
-        docker = Docker(config, workspace)
-        docker.verify()
-        root, upstream, notes, changes = prepare(project, job, target, base_ref, source_version)
-        task = f"Upgrade {project} from the reconciled baseline to official {target}. "
-        important = [p for p in changes if not p.startswith(("l10n/", "android/", "docs/")) and "lock" not in p]
-        task += "Upstream files changed: " + ", ".join(important[:150])
-        task += "\nMerge notes: " + "\n".join(notes)
-        task += "\nRead upstream files/diffs to verify player and protocol compatibility. "
-        task += "Build commands, workflows and tests are protected. Report blockers instead of bypassing them."
-        errors = ""
-        tag = "local/" + project + "-rkmpp:candidate-" + target + "-" + job.name[-8:]
-        for attempt in range(1 if no_agent else config["repair_rounds"]):
-            if not no_agent:
-                result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
-                                          "attempt": attempt + 1}
-                # Model lifetime ends before compiler/build memory is needed.
-                with docker.model() as endpoint:
-                    review = run_agent(root, upstream, task + "\nLast check failures:\n" + errors[-10000:],
-                        lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
-                        project, job / "agent.jsonl", turns=config["agent_turns"],
-                        generation=config.get("generation"),
-                        required_observations=review_targets(project, root, changes))
-                    result["agent_review"] = review
-                    save_json(job / "agent-review.json", review)
-                    (job / "agent-summary.txt").write_text(review["summary"] + "\n")
-            try:
-                validate(root)
-                docker.checks(project, root, job / f"checks-{attempt}.log")
-                docker.build(project, root, tag, job / f"build-{attempt}.log")
-                break
-            except RuntimeError as error:
-                errors = str(error)
-                if attempt + 1 == (1 if no_agent else config["repair_rounds"]):
-                    raise
-        result.update(status="built", image=tag,
-                      image_id=docker.export(tag, job / "image.tar"))
-        git(root, "add", "-N", "--", ".")
-        (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
-        if project == "memories":
-            with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
-                archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
-        save_json(job / "result.json", result)
-        if publish_code:
-            # Publication failure does not discard a successfully built local image.
-            try:
-                result.update(publish(project, root, target, job))
-            except Exception as error:
-                result["publication_error"] = str(error)
+        save_manifest(job, config, HERE)
+        with job_budget(config, workspace):
+            docker = Docker(config, workspace)
+            docker.verify()
+            docker.reap()
+            phase(job, result, "reconciliation")
+            root, upstream, notes, changes = prepare(project, job, target, base_ref, source_version)
+            task = f"Upgrade {project} from the reconciled baseline to official {target}. "
+            important = [p for p in changes if not p.startswith(("l10n/", "android/", "docs/")) and "lock" not in p]
+            task += "Upstream files changed: " + ", ".join(important[:150])
+            task += "\nMerge notes: " + "\n".join(notes)
+            task += "\nRead upstream files/diffs to verify player and protocol compatibility. "
+            task += "Build commands, workflows and tests are protected. Report blockers instead of bypassing them."
+            errors = ""
+            tag = "local/" + project + "-rkmpp:candidate-" + target + "-" + job.name[-8:]
+            for attempt in range(1 if no_agent else config["repair_rounds"]):
+                if not no_agent:
+                    phase(job, result, f"model-review-{attempt + 1}")
+                    result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
+                                              "attempt": attempt + 1}
+                    # Model lifetime ends before compiler/build memory is needed.
+                    with docker.model() as endpoint:
+                        record_runtime(job, docker)
+                        review = run_agent(root, upstream, task + "\nLast check failures:\n" + errors[-10000:],
+                            lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
+                            project, job / "agent.jsonl", turns=config["agent_turns"],
+                            generation=config.get("generation"),
+                            required_observations=review_targets(project, root, changes))
+                        result["agent_review"] = review
+                        save_json(job / "agent-review.json", review)
+                        (job / "agent-summary.txt").write_text(review["summary"] + "\n")
+                try:
+                    phase(job, result, f"checks-{attempt + 1}")
+                    validate(root)
+                    docker.checks(project, root, job / f"checks-{attempt}.log")
+                    phase(job, result, f"build-{attempt + 1}")
+                    docker.build(project, root, tag, job / f"build-{attempt}.log")
+                    break
+                except RuntimeError as error:
+                    errors = str(error)
+                    if attempt + 1 == (1 if no_agent else config["repair_rounds"]):
+                        raise
+            phase(job, result, "export")
+            result.update(status="built", image=tag,
+                          image_id=docker.export(tag, job / "image.tar"))
+            git(root, "add", "-N", "--", ".")
+            (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
+            if project == "memories":
+                with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
+                    archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
+            save_json(job / "result.json", result)
+            if publish_code:
+                # Publication failure does not discard a successfully built local image.
+                try:
+                    result.update(publish(project, root, target, job))
+                except Exception as error:
+                    result["publication_error"] = str(error)
         return result
     except Exception as error:
         result.update(status="failed", error=str(error))
         (job / "error.txt").write_text(traceback.format_exc())
         return result
     finally:
+        result["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         save_json(job / "result.json", result)
 
 
@@ -186,45 +222,59 @@ def discover(workspace):
 
 
 def smoke(config, workspace):
-    """Require a model repair of HTTP-option compatibility, then test/build/export."""
+    """Require a model repair; retain the outcome and error even when it fails."""
     job = workspace / "jobs" / ("smoke-" + uuid.uuid4().hex[:8])
-    root = job / "source"
-    upstream = job / "upstream"
-    source = create_fixture(root, upstream)
-    (root / "Dockerfile").write_text("FROM " + config["python_image"] + "\nWORKDIR /app\nCOPY . .\nRUN python -m unittest discover -s tests -v\nCMD [\"python\", \"-c\", \"print('maintainer smoke passed')\"]\n")
-    docker = Docker(config, workspace)
-    task = ("Repair go-vod/http_options.py: supported_http_options must return requested option names "
-            "supported by BOTH configured binaries, preserving requested order and matching exact whitespace-separated "
-            "tokens. Read the local file and the upstream reference for the same path, then make the source correction. "
-            "Do not change tests. Finish only after completing the repair; otherwise report a blocker.")
-    with docker.model(smoke=True) as endpoint:
-        review = run_agent(root, upstream, task,
-                  lambda _: "".join(difflib.unified_diff(BROKEN.splitlines(True), REFERENCE.splitlines(True))),
-                  endpoint, "memories", job / "agent.jsonl", turns=6,
-                  generation=config.get("generation"), require_edit=True,
-                  required_observations={"read": ["go-vod/http_options.py"],
-                                         "upstream": ["go-vod/http_options.py"]})
-    if source.read_text() == BROKEN:
-        raise RuntimeError("Repair exercise did not change the broken source")
-    save_json(job / "agent-review.json", review)
-    docker.checks("fixture", root, job / "checks.log")
-    tag = "local/rkmpp-maintainer:smoke-" + job.name[-8:]
-    docker.build("fixture", root, tag, job / "build.log")
-    spec = config["models"]["smoke"]
-    result = {"status": "ready", "kind": "real-local-model-smoke", "job": str(job),
-              "exercise": "http-options-intersection", "source_edit_verified": True,
-              "agent_review": review,
-              "model": {"filename": spec["filename"], "sha256": spec["sha256"]},
-              "model_runtime": config.get("model_runtime", {}),
-              "external_model_endpoint": bool(os.environ.get("MODEL_ENDPOINT")),
-              "image": tag, "image_id": docker.export(tag, job / "image.tar")}
-    save_json(job / "result.json", result)
+    job.mkdir(parents=True)
+    result = {"status":"preparing", "kind":"real-local-model-smoke", "job":str(job),
+              "exercise":"http-options-intersection", "source_edit_verified":False}
+    phase(job, result, "preflight")
+    try:
+        save_manifest(job, config, HERE, smoke=True)
+        with job_budget(config, workspace):
+            root, upstream = job / "source", job / "upstream"
+            source = create_fixture(root, upstream)
+            (root / "Dockerfile").write_text("FROM " + config["python_image"] + "\nWORKDIR /app\nCOPY . .\nRUN python -m unittest discover -s tests -v\nCMD [\"python\", \"-c\", \"print('maintainer smoke passed')\"]\n")
+            docker = Docker(config, workspace)
+            docker.reap()
+            task = ("Repair go-vod/http_options.py: supported_http_options must return requested option names "
+                    "supported by BOTH configured binaries, preserving requested order and matching exact whitespace-separated "
+                    "tokens. Read the local file and the upstream reference for the same path, then make the source correction. "
+                    "Use action upstream with path go-vod/http_options.py for the reference. "
+                    "Do not change tests. Finish only after completing the repair; otherwise report a blocker.")
+            phase(job, result, "model-repair")
+            with docker.model(smoke=True) as endpoint:
+                record_runtime(job, docker)
+                review = run_agent(root, upstream, task,
+                    lambda _: "".join(difflib.unified_diff(BROKEN.splitlines(True), REFERENCE.splitlines(True))),
+                    endpoint, "memories", job / "agent.jsonl", turns=8,
+                    generation=config.get("generation"), require_edit=True,
+                    required_observations={"read":["go-vod/http_options.py"],
+                                           "upstream":["go-vod/http_options.py"]})
+            if source.read_text() == BROKEN:
+                raise RuntimeError("Repair exercise did not change the broken source")
+            save_json(job / "agent-review.json", review)
+            phase(job, result, "checks")
+            docker.checks("fixture", root, job / "checks.log")
+            tag = "local/rkmpp-maintainer:smoke-" + job.name[-8:]
+            phase(job, result, "build")
+            docker.build("fixture", root, tag, job / "build.log")
+            phase(job, result, "export")
+            result.update(status="ready", source_edit_verified=True, agent_review=review,
+                model=config["models"]["smoke"], model_runtime=config.get("model_runtime", {}),
+                external_model_endpoint=bool(os.environ.get("MODEL_ENDPOINT")), image=tag,
+                image_id=docker.export(tag, job / "image.tar"))
+    except Exception as error:
+        result.update(status="failed", error=str(error))
+        (job / "error.txt").write_text(traceback.format_exc())
+    finally:
+        result["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        save_json(job / "result.json", result)
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke"])
+    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check"])
     parser.add_argument("--repo", choices=PROJECTS)
     parser.add_argument("--target")
     parser.add_argument("--base-ref", default="main")
@@ -241,10 +291,21 @@ def main():
         # Keep the Portainer service available for Console jobs without owning the job lock.
         print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
         while True:
+            failed = False
             time.sleep(60)
     with locked(workspace / "maintainer.lock"):
+        recover_jobs(workspace)
+        if args.action == "runtime-check":
+            result = runtime_checks(config, workspace)
+            print(json.dumps(result, indent=2))
+            if result["status"] != "passed":
+                raise SystemExit(1)
+            return
         if args.action == "smoke":
-            print(json.dumps(smoke(config, workspace), indent=2))
+            result = smoke(config, workspace)
+            print(json.dumps(result, indent=2))
+            if result["status"] != "ready":
+                raise SystemExit(1)
             return
         if args.action == "prepare":
             if not args.repo or not args.target:
@@ -275,9 +336,12 @@ def main():
                         result = run_job(record["project"], config, workspace, record["latest"],
                                          publish_code=args.publish, no_agent=args.no_agent)
                         state[key] = {"status": result["status"], "job": result["job"]}
+                        failed = failed or result["status"] != "built"
                         save_json(state_path, state)
                         print(json.dumps(result), flush=True)
             if args.action != "watch":
+                if args.action == "once" and failed:
+                    raise SystemExit(1)
                 break
             time.sleep(config["poll_seconds"])
 

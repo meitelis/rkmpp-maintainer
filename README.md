@@ -52,7 +52,7 @@ Building the image is a host preparation step. Portainer owns the running servic
 
 ## Deploy in Portainer
 
-In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Repository**:
+In the Radxa Docker Standalone environment, choose **Stacks â†’ Add stack â†’ Repository**:
 
 | Setting | Value |
 | --- | --- |
@@ -72,13 +72,14 @@ Deploy the stack. Its control should show **Total**, with a healthy builder and 
 
 With `MAINTAINER_ACTION=idle`, open the maintainer container's **Console**, select `/bin/sh`, and connect. The idle service does not own the job lock, so Console jobs can run without fighting a background monitor.
 
-First run:
+First validate failure handling with the actual isolated daemon, then run the model repair:
 
 ```sh
+python3 /opt/maintainer/maintainer.py runtime-check
 python3 /opt/maintainer/maintainer.py smoke
 ```
 
-Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its upstream reference and actually repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before the image build/export. Untouched source fails the exercise. Success ends with `"kind": "real-local-model-smoke"`, `"exercise": "http-options-intersection"`, `"source_edit_verified": true` and `"status": "ready"`. This bounded repair test does not establish full repository-upgrade reliability.
+Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its upstream reference and actually repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before the image build/export. Untouched source fails the exercise. Success ends with `"kind": "real-local-model-smoke"`, `"exercise": "http-options-intersection"`, `"source_edit_verified": true` and `"status": "ready"`. The exercise allows at most eight model actions, including recovery from a wrong local/upstream read; it does not establish full repository-upgrade reliability.
 
 For the historical Memories upgrade:
 
@@ -88,9 +89,11 @@ python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base
 
 This starts from the actual pre-upgrade fork, reconciles upstream changes, lets Ornith inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
 
-The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must edit already-read source, complete its review, or report a specific blocker. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
+The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must complete a missing required observation, edit already-read source, complete its review, or report a specific blocker. During this restricted phase, observation tools may only access the exact outstanding required paths; unrelated reads remain forbidden. Required file and diff observations include every paginated line, with explicit continuation; a truncated first page cannot complete a required observation. An impossible minimum review budget fails before generation. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
 
 Successful upgrade jobs now report **`status: built`**, **`review_status: pending-human-review`** and **`deployment_approved: false`**. Exit code zero means the checks/build/export completed, not that deployment was approved. `agent-review.json` records the model's self-report, actual observations and edit count. `ready` is reserved for the isolated smoke exercise. Historical replays are labeled `kind: historical-replay`: their deliberately old starting point may omit later fixes from your current branch, so they are not automatic replacements for the live service. Earlier job evidence is retained with its original result format.
+
+Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
 
 The model gets four CPU threads, a 12 GiB memory ceiling and 16K context. Thinking is capped at 1,024 tokens per turn, with a 4,096-token output budget. The publisher's coding sampling settings are temperature 0.6, top-p 0.95 and top-k 20. llama.cpp separates thinking from the final schema-constrained JSON action; only that action enters the editing loop/transcript. The model unloads before tests and compilation. External `MODEL_ENDPOINT` servers must supply compatible JSON and reasoning handling and manage their own memory/lifetime. NPU operation remains unvalidated.
 
@@ -131,6 +134,6 @@ bash -n scripts/migrate-to-portainer.sh
 docker compose run --build --rm maintainer smoke
 ```
 
-CI runs the full Linux suite and real pinned-model smoke on ARM64. Source checks cover protected edits, credential isolation, process bounds, locking, reasoning/action separation, runtime limits, idle mode and a three-way upgrade fixture. A CI smoke pass is not a claim that the historical upgrade or hardware playback passed on the Radxa. Old Qwen2.5 results remain evidence for that older configuration.
+CI runs the full Linux suite and real pinned-model smoke on ARM64. Source checks cover protected edits, credential isolation, process bounds, locking, reasoning/action separation, runtime limits, idle mode and a three-way upgrade fixture. CI first runs the full Linux checks, then actual daemon/PHP failure checks and the real model repair; downloadable evidence excludes model weights and image archives. A CI smoke pass is not a claim that the historical upgrade or hardware playback passed on the Radxa. Old Qwen2.5 results remain evidence for that older configuration.
 
 Sources: [Portainer stack deployment](https://docs.portainer.io/user/docker/stacks/add), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [Ornith model](https://huggingface.co/ornith-ai/Ornith-1.5-9B), [pinned GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/tree/abdd624b12ebf020b767fff532ff44fe552b28c3).
