@@ -1,0 +1,32 @@
+name: RKMPP maintainer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: maintainer-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Unit tests, syntax and Compose validation
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 -m py_compile *.py
+          docker compose config --quiet
+      - name: Real ARM64 local-model edit, tests, build and export
+        run: docker compose run --build --rm maintainer smoke
+      - name: Logs and stop isolated daemon
+        if: always()
+        run: |
+          docker compose logs --no-color --tail=100
+          sudo find data/jobs -name result.json -exec cat {} \; 2>/dev/null || true
+          sudo find data/jobs -name agent.jsonl -exec tail -n 15 {} \; 2>/dev/null || true
+          sudo tail -n 100 data/model.log 2>/dev/null || true
+          docker compose down --volumes

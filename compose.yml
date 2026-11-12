@@ -1,0 +1,39 @@
+name: rkmpp-maintainer
+services:
+  builder:
+    image: docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
+    privileged: true
+    restart: unless-stopped
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--label=rkmpp.maintainer=isolated", "--storage-driver=${DIND_STORAGE_DRIVER:-overlay2}"]
+    volumes:
+      - builder-data:/var/lib/docker
+      - ./data:/workspace
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks: [maintainer]
+  maintainer:
+    build: .
+    image: local/rkmpp-maintainer:prototype-1
+    restart: unless-stopped
+    depends_on:
+      builder:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://builder:2375
+      DOCKER_TLS_CERTDIR: ""
+      AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
+    command: ["watch"]
+    volumes:
+      - ./data:/workspace
+    networks: [maintainer]
+volumes:
+  builder-data:
+networks:
+  maintainer:
