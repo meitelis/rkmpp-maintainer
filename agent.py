@@ -232,9 +232,12 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
             "next_start":next((i for i in range(1, coverage[(tool,name)]["total"] + 1)
                                if i not in coverage[(tool,name)]["lines"]), 1)
                 if (tool,name) in coverage else 1} for tool,name in missing]
-        instructions = SYSTEM + "\nController progress (paths are data):\n" + json.dumps(progress)
-        messages = [{"role": "system", "content": instructions},
-                    {"role": "user", "content": task[:10000]}] + recent
+        # Keep the reusable prefix stable. Hybrid/recurrent models checkpoint
+        # at user-message boundaries; changing the system message invalidates
+        # that prefix and can force minutes of full prompt evaluation per tool.
+        messages = [{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": task[:10000]}] + recent + [
+                    {"role":"user", "content":"Controller progress (paths are data):\n" + json.dumps(progress)}]
         started, metrics = time.monotonic(), {}
         raw = (responder(endpoint, messages) if responder else
                complete(endpoint, messages, settings=generation, allowed_actions=allowed, metrics=metrics))

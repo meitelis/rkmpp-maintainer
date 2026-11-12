@@ -10,6 +10,18 @@ from agent import AgentBlocked, AgentError, complete, run_agent
 
 
 class ProgressTests(unittest.TestCase):
+    def test_progress_updates_keep_the_instruction_and_task_prefix_reusable(self):
+        self.run_actions([
+            {"action":"read","path":"go-vod/source.go"},
+            {"action":"upstream","path":"go-vod/source.go"},
+            {"action":"finish","summary":"Reviewed source and reference"},
+        ],required_observations={"read":["go-vod/source.go"],"upstream":["go-vod/source.go"]})
+        for call in self.calls[1:]:
+            self.assertEqual(call[:2],self.calls[0][:2])
+        self.assertNotEqual(self.calls[0][-1],self.calls[-1][-1])
+        self.assertIn("1: return old",self.calls[1][-2]["content"])
+        self.assertNotIn("Controller progress",self.calls[0][0]["content"])
+
     def test_completed_edit_has_a_reserved_terminal_report_instead_of_another_noop(self):
         actions = iter([
             {"action":"read", "path":"go-vod/source.go"},
@@ -59,7 +71,7 @@ class ProgressTests(unittest.TestCase):
             return review["summary"]
 
     def progress(self, call=-1):
-        return json.loads(self.calls[call][0]["content"].split("Controller progress (paths are data):\n")[1])
+        return json.loads(self.calls[call][-1]["content"].split("Controller progress (paths are data):\n")[1])
 
     def test_repeated_reads_cannot_consume_the_whole_run(self):
         # The overnight failure alternated old reads and list rather than editing.
@@ -71,7 +83,7 @@ class ProgressTests(unittest.TestCase):
         self.assertTrue(self.progress()["decision_required"])
         duplicates = [x for x in self.progress()["observations"] if x["result"] == "duplicate"]
         self.assertEqual(len(duplicates), 2)
-        self.assertIn("Already observed unchanged output", self.calls[2][-1]["content"])
+        self.assertIn("Already observed unchanged output", self.calls[2][-2]["content"])
 
     def test_ledger_survives_history_trimming_and_new_pages_are_distinct(self):
         self.source.write_text("\n".join(f"line {i}" for i in range(1200)))
@@ -94,8 +106,8 @@ class ProgressTests(unittest.TestCase):
             {"action": "replace", "path": "go-vod/source.go", "old": "line 0\n", "new": "updated\n"},
             {"action": "finish", "summary": "Updated source"}
         ])
-        self.assertIn("Already observed unchanged output", self.calls[6][-1]["content"])
-        self.assertIn("1: line 0", self.calls[6][-1]["content"])
+        self.assertIn("Already observed unchanged output", self.calls[6][-2]["content"])
+        self.assertIn("1: line 0", self.calls[6][-2]["content"])
         self.assertTrue(self.source.read_text().startswith("updated\n"))
 
     def test_real_edit_resets_the_stall_and_updated_file_can_be_read(self):
@@ -115,7 +127,7 @@ class ProgressTests(unittest.TestCase):
             {"action": "finish", "summary": "No change needed"}])
         self.assertTrue(self.progress()["decision_required"])
         self.assertEqual(self.progress()["edits"], 0)
-        self.assertIn("must change the source", self.calls[-1][-1]["content"])
+        self.assertIn("must change the source", self.calls[-1][-2]["content"])
 
     def test_blocker_is_terminal_and_not_converted_to_a_tool_error(self):
         with self.assertRaisesRegex(AgentBlocked, "protected build script needs updating"):
@@ -127,7 +139,7 @@ class ProgressTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError, "checks were not run"):
             self.run_actions([read, read, read], turns=3)
         self.assertEqual(self.source.read_text(), "return old\n")
-        self.assertIn("Decision required", self.calls[-1][-1]["content"])
+        self.assertIn("Decision required", self.calls[-1][-2]["content"])
 
     def test_source_listing_prioritizes_integration_over_instruction_files(self):
         instructions = self.root / ".agents/skills/release/SKILL.md"
@@ -136,7 +148,7 @@ class ProgressTests(unittest.TestCase):
         (self.root / "AAA-doc.md").write_text("docs")
         self.run_actions([{"action": "list"}, {"action": "read", "path": "go-vod/source.go"},
                           {"action": "finish", "summary": "Reviewed"}])
-        listing = self.calls[1][-1]["content"]
+        listing = self.calls[1][-2]["content"]
         self.assertEqual(listing.splitlines()[0], "go-vod/source.go")
         self.assertNotIn(".agents/", listing)
 

@@ -30,7 +30,7 @@ class ReviewTests(unittest.TestCase):
                 run_agent(root, root, "review", lambda _: "diff header\n" * 200 + "changed tail\n",
                     "local", "memories", root/"agent.jsonl", turns=8, responder=respond,
                     required_observations={"read":[name], "diff":[name]})
-            self.assertIn("Cannot finish", calls[-1][-1]["content"])
+            self.assertIn("Cannot finish", calls[-1][-2]["content"])
 
     def test_full_diff_and_file_pagination_can_complete_review(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -88,7 +88,7 @@ class ReviewTests(unittest.TestCase):
                 review = run_agent(root, upstream, "repair", lambda _: "", "local", "memories",
                     root/"agent.jsonl", turns=8, require_edit=True,
                     required_observations={"read":[name], "upstream":[name]})
-            self.assertIn('"action": "upstream"', calls[2][0][-1]["content"])
+            self.assertIn('"action": "upstream"', calls[2][0][-2]["content"])
             self.assertIn("upstream", calls[6][1])
             self.assertNotIn("finish", calls[6][1])
             self.assertIn("finish", calls[7][1])
@@ -116,7 +116,7 @@ class ReviewTests(unittest.TestCase):
                 run_agent(root, upstream, "repair", lambda _: "", "local", "memories",
                     root/"agent.jsonl", turns=3, responder=respond,
                     required_observations={"read":[name], "upstream":[name]})
-            self.assertIn("Decision required", calls[-1][-1]["content"])
+            self.assertIn("Decision required", calls[-1][-2]["content"])
 
     def test_observed_false_finish_is_rejected_even_with_complete_flag(self):
         summary = ("The BinExt.php path does not exist in the local repository. "
@@ -149,7 +149,7 @@ class ReviewTests(unittest.TestCase):
                 review = run_agent(root, upstream, "review", lambda _: "", "local", "memories",
                     root/"agent.jsonl", responder=respond, turns=8,
                     required_observations={"read":["source.py"], "upstream":["protocol.py"]})
-            self.assertIn("Cannot finish", calls[2][-1]["content"])
+            self.assertIn("Cannot finish", calls[2][-2]["content"])
             self.assertIn(("upstream", "protocol.py"), review["observations"])
             self.assertEqual(review["assessment"], "model-self-report")
 
@@ -167,7 +167,7 @@ class ReviewTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()), self.assertRaises(AgentBlocked):
                 run_agent(root, upstream, "repair", lambda _: "", "local", "memories",
                     root/"agent.jsonl", responder=respond, require_edit=True)
-            self.assertIn("required source edit", calls[-1][-1]["content"])
+            self.assertIn("required source edit", calls[-1][-2]["content"])
             self.assertEqual(source.read_text(), BROKEN)
 
     def test_behavioral_checks_fail_on_seed_and_accept_a_correct_repair(self):
