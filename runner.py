@@ -32,13 +32,18 @@ class Docker:
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
         image = self.config["llama_image"]
+        runtime = self.config.get("model_runtime", {})
+        threads = str(runtime.get("threads", 4))
         command(["docker", "pull", image], timeout=600)
-        command(["docker", "run", "-d", "--name", name, "--cpus", "4", "--memory", "8g",
+        command(["docker", "run", "-d", "--name", name, "--cpus", threads,
+                 "--memory", runtime.get("memory", "12g"),
                  "--read-only", "--tmpfs", "/tmp:rw,size=128m", "-p", "8080:8080",
                  "-v", str(path.parent) + ":/models:ro", image,
                  "-m", "/models/" + path.name, "--host", "0.0.0.0", "--port", "8080",
-                 "--alias", "local-maintainer", "--ctx-size", "16384", "--threads", "4",
-                 "--parallel", "1", "--jinja"], timeout=60)
+                 "--alias", "local-maintainer", "--ctx-size", str(runtime.get("context_size", 16384)),
+                 "--threads", threads, "--parallel", "1", "--jinja",
+                 "--reasoning-format", "deepseek",
+                 "--reasoning-budget", str(runtime.get("reasoning_budget", 1024))], timeout=60)
         endpoint = "http://builder:8080"
         try:
             deadline = time.monotonic() + 600

@@ -19,7 +19,7 @@ services:
     networks: [maintainer]
   maintainer:
     build: .
-    image: local/rkmpp-maintainer:prototype-1
+    image: local/rkmpp-maintainer:prototype-2-ornith
     restart: unless-stopped
     depends_on:
       builder:

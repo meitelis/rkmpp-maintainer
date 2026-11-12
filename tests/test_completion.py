@@ -1,0 +1,61 @@
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from agent import AgentError, SCHEMA, complete, run_agent
+
+
+class CompletionTests(unittest.TestCase):
+    def response(self, content, finish_reason="stop", **extra):
+        return io.BytesIO(json.dumps({"choices": [{"finish_reason": finish_reason,
+                            "message": {"content": content, **extra}}]}).encode())
+
+    def test_reasoning_is_separate_from_the_json_action(self):
+        action = '{"action":"finish","summary":"done"}'
+        with patch("agent.urllib.request.urlopen", return_value=self.response(
+                action, reasoning_content="internal analysis")) as request:
+            result = complete("http://local/", [{"role": "user", "content": "fix"}], settings={
+                "temperature": 0.6, "max_tokens": 4096, "top_p": 0.95,
+                "reasoning_format": "deepseek", "chat_template_kwargs": {"enable_thinking": True},
+                "messages": [], "response_format": {"type": "text"}})
+        self.assertEqual(result, action)
+        payload = json.loads(request.call_args.args[0].data)
+        self.assertEqual(payload["messages"], [{"role": "user", "content": "fix"}])
+        self.assertEqual(payload["response_format"]["schema"], SCHEMA)
+        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertEqual(payload["reasoning_format"], "deepseek")
+        self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
+        self.assertNotIn("internal analysis", result)
+
+    def test_truncated_or_reasoning_only_output_cannot_be_an_action(self):
+        cases = [(None, "stop", "no action"), ("  ", "stop", "no action"),
+                 ('{"action":"finish"}', "length", "truncated"),
+                 ('<think>analysis</think>{"action":"finish"}', "stop", "Unparsed reasoning")]
+        for content, reason, error in cases:
+            with self.subTest(content=content, reason=reason), \
+                 patch("agent.urllib.request.urlopen", return_value=self.response(
+                     content, reason, reasoning_content="internal analysis")):
+                with self.assertRaisesRegex(AgentError, error):
+                    complete("http://local", [])
+
+    def test_thinking_tags_inside_a_source_edit_are_allowed(self):
+        action = json.dumps({"action": "replace", "path": "go-vod/source.go",
+                             "old": "old", "new": "<think>"})
+        with patch("agent.urllib.request.urlopen", return_value=self.response(action)):
+            self.assertEqual(complete("http://local", []), action)
+
+    def test_tool_loop_uses_configured_generation_and_logs_only_action(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            transcript = root / "agent.jsonl"
+            settings = {"temperature": 0.6, "max_tokens": 4096}
+            with patch("agent.complete", return_value='{"action":"finish","summary":"done"}') as send:
+                self.assertEqual(run_agent(root, root, "fix", lambda _: "", "http://local",
+                                 "memories", transcript, generation=settings), "done")
+            self.assertEqual(send.call_args.kwargs["settings"], settings)
+            record = json.loads(transcript.read_text())
+            self.assertEqual(set(record), {"turn", "response"})
+            self.assertEqual(json.loads(record["response"])["action"], "finish")

@@ -20,7 +20,7 @@ All commands below run from this repository's root. Linux and Docker Compose are
 ## What runs
 
 - **Maintainer:** a Python controller with a bounded JSON file-editing agent. It reads upstream diffs and edits source, with three repair rounds of up to 24 tool turns. Tests, workflows, build commands and the maintainer itself are protected from model edits.
-- **Local model:** a transient llama.cpp container, loaded during editing and removed before tests/builds. The coding model is Qwen2.5-Coder-7B-Instruct Q4_K_M (4.68 GB weights plus context/runtime). The smoke test uses this same 7B model. An earlier 0.5B trial started correctly but failed to follow the file tools, so it is not used as the acceptance test. URLs, revisions, sizes and SHA-256 checksums are pinned in `config.json`.
+- **Local model:** a transient llama.cpp container, loaded during editing and removed before tests/builds. Coding and smoke both use **Ornith-1.5-9B Q5_K_M** (6.64 GB weights plus context/runtime), pinned to the publisher's exact revision and SHA-256 in `config.json`. The model container has a **12 GiB memory limit**, four CPU threads, and a **16K context**. The limit is a ceiling, not a measured memory requirement or a limit on the whole Docker stack.
 - **Builder:** a separate Docker-in-Docker daemon. It has its own images/cache and no host Docker socket. The controller refuses a daemon without its dedicated label. DinD is privileged and is not a hardened boundary against hostile repositories; use it for these trusted source trees.
 
 No production container is updated. Candidates are saved as `data/jobs/<job>/image.tar`, alongside `result.json`, logs and a patch. Memories jobs also save the matching `memories-helper.tar.gz`.
@@ -33,7 +33,18 @@ Run from this directory. Docker Compose is required.
 docker compose run --build --rm maintainer smoke
 ```
 
-This pulls the pinned images, downloads the 4.68 GB coding model, asks it to fix a broken addition function, unloads it, runs immutable tests, builds a small Docker image, and exports the image. It uses neither your GitHub write credentials nor your running application stacks. Success ends with `"kind": "real-local-model-smoke"` and `"status": "ready"`.
+This pulls the pinned images, downloads the 6.64 GB coding model, asks it to fix a broken addition function, unloads it, runs immutable tests, builds a small Docker image, and exports the image. It uses neither your GitHub write credentials nor your running application stacks. Success ends with `"kind": "real-local-model-smoke"` and `"status": "ready"`; `result.json` identifies the model filename and checksum. An external `MODEL_ENDPOINT` is marked separately in that result.
+
+The model uses the publisher's coding sampling settings: temperature 0.6, top-p 0.95 and top-k 20. Thinking is enabled but capped at 1,024 tokens per turn by the pinned llama.cpp server. A 4,096-token output limit leaves room for the final action. The server separates thinking into `reasoning_content`; only the final schema-constrained JSON action enters the editing loop or its transcript. Empty, truncated or unparsed-thinking responses fail the job. These budgets can be adjusted in `config.json` after measuring the board.
+
+### Update an existing maintainer checkout
+
+```sh
+git pull --ff-only
+docker compose run --build --rm maintainer smoke
+```
+
+This builds `local/rkmpp-maintainer:prototype-2-ornith` and tests the selected model. Existing `.env`, jobs, and cached models stay in place; the new weights use a different filename from the old Qwen2.5 cache. If the monitor was already running, recreate it with `docker compose up -d --build maintainer` after smoke succeeds. That retains your existing `AUTO_UPDATE` setting.
 
 If nested overlay2 is unavailable on the host, set `DIND_STORAGE_DRIVER=vfs` in `.env` and recreate the builder. VFS needs substantially more disk space. Data and the nested image cache stay in this stack's directories/volume.
 
@@ -45,7 +56,7 @@ After smoke passes:
 docker compose run --rm maintainer run --repo memories --target 11.1.2 --base-ref d6a9471dfbd3dd721bd67698c062ddcc773e232c --source-version 11.1.1
 ```
 
-This starts from your actual pre-upgrade main, reads official 11.1.1 and 11.1.2, reconciles go-vod changes and version contracts, lets the 7B model inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. The coding model is cached after the smoke test. The result remains local.
+This starts from your actual pre-upgrade main, reads official 11.1.1 and 11.1.2, reconciles go-vod changes and version contracts, lets the 9B model inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. The coding model is cached after the smoke test. The result remains local.
 
 For diagnosis, `prepare` performs just cloning/reconciliation, and `run --no-agent` tests deterministic reconciliation and builds. Neither substitutes for evaluating the local model's ability to resolve a future incompatible change.
 
@@ -84,7 +95,7 @@ A compiled image and passing source tests do not establish real RKMPP, browser o
 
 ## NPU and alternative local inference
 
-The first reference backend is CPU llama.cpp so that it can be tested without changing NPU drivers or converting models. Set `MODEL_ENDPOINT` to a local OpenAI-compatible RKLLM server adapter later to benchmark NPU inference. That adapter must support `/v1/chat/completions`, accept the JSON response-format request and produce the requested edit actions. External servers manage their own model memory; the maintainer cannot unload them. NPU operation is not validated by this prototype.
+The reference backend is CPU llama.cpp. Set `MODEL_ENDPOINT` to another local compatible server to evaluate an alternative backend. It must support `/v1/chat/completions`, schema-constrained JSON, the generation settings in `config.json`, and separation of thinking from final action text. External servers manage their own model memory and reasoning budget; the maintainer cannot unload or limit them. Ornith's hybrid Qwen3.5 architecture and NPU operation are not validated with RKLLM by this prototype.
 
 ## Development and evidence
 
@@ -94,8 +105,8 @@ python3 -m py_compile *.py
 docker compose config --quiet
 ```
 
-Unit tests cover release selection, token isolation, job locking, process timeouts, file/symlink restrictions, protected checks, bounded malformed-model output and a three-way upgrade fixture. The CI workflow builds the controller on ARM64 and runs the actual 7B-model smoke in the isolated daemon. Check the workflow result for the specific commit before claiming that Docker/LLM smoke has passed. A successful smoke does not imply that the 7B model has completed the full historical replay on the Radxa.
+Unit tests cover release selection, token isolation, job locking, process timeouts, file/symlink restrictions, protected checks, bounded malformed-model output, reasoning/action separation, runtime limits and a three-way upgrade fixture. The CI workflow builds the controller on ARM64 and runs the actual pinned 9B-model smoke in the isolated daemon. Check the workflow result for the specific commit before claiming that Docker/LLM smoke has passed. The simple edit/build/export fixture validates integration; it does not establish real upgrade reliability, Radxa inference speed, or completed historical replay with Ornith. Previous Qwen2.5 validation remains historical evidence for that older configuration.
 
 Data and caches can grow with builds. Keep the result folders/images you need and remove obsolete ones deliberately; this prototype does not delete old job evidence automatically.
 
-Sources: [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [official coding GGUF](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF), [Rockchip RKLLM](https://github.com/airockchip/rknn-llm).
+Sources: [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [Ornith model and coding settings](https://huggingface.co/ornith-ai/Ornith-1.5-9B), [pinned publisher GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/tree/abdd624b12ebf020b767fff532ff44fe552b28c3), [Rockchip RKLLM](https://github.com/airockchip/rknn-llm).
