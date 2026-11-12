@@ -11,6 +11,7 @@ from pathlib import Path
 from core import command, download_model, save_json
 from limits import bounded_timeout, check_budget, cleanup_budget, require_space
 from model_settings import require_model_memory, settings
+from model_metrics import CGROUP_COMMAND, CgroupSampler
 
 PHP_LINT_CHECK = "find memories_rkmpp_v11 -name '*.php' -exec sh -ec 'for f do php -l \"$f\" || exit; done' sh {} + && php scripts/test-v11-compat.php"
 
@@ -88,11 +89,13 @@ class Docker:
         model_options = []
         for field, flag in [("threads_batch","--threads-batch"), ("batch_size","--batch-size"),
                             ("ubatch_size","--ubatch-size"), ("flash_attention","--flash-attn"),
-                            ("cache_type_k","--cache-type-k"), ("cache_type_v","--cache-type-v")]:
+                            ("cache_type_k","--cache-type-k"), ("cache_type_v","--cache-type-v"),
+                            ("cache_ram","--cache-ram"), ("context_checkpoints","--ctx-checkpoints")]:
             if field in runtime:
                 model_options += [flag, str(runtime[field])]
         command(["docker", "pull", image], timeout=600)
         endpoint = "http://builder:8080"
+        sampler = None
         try:
             command(["docker", "run", "-d", "--name", name, "--label", "rkmpp.maintainer.transient=true", "--cpus", threads,
                  "--memory", runtime.get("memory", "12g"), *docker_options,
@@ -103,6 +106,10 @@ class Docker:
                  "--threads", threads, "--parallel", "1", "--jinja",
                  "--reasoning-format", "deepseek",
                  "--reasoning-budget", str(runtime.get("reasoning_budget", 1024)), *model_options], timeout=60)
+            if metrics_path:
+                sampler = CgroupSampler(lambda:command(["docker","exec",name,"sh","-c",CGROUP_COMMAND],timeout=5),
+                                        metrics_path,runtime)
+                sampler.start()
             deadline = time.monotonic() + 600
             while time.monotonic() < deadline:
                 check_budget()
@@ -125,14 +132,18 @@ class Docker:
                 if metrics_path:
                     with cleanup_budget():
                         snapshot = {"time":time.time(), "runtime":runtime, "errors":[]}
+                        if sampler:
+                            sampler.stop()
+                            snapshot.update(cgroup_memory=sampler.last,memory_samples=sampler.samples,
+                                            sampling_errors=sampler.errors)
                         try:
                             snapshot["state"] = json.loads(command(["docker", "inspect", name,
                                 "--format", "{{json .State}}"], timeout=15))
+                            snapshot["state"].pop("Health",None)
                             snapshot["docker_stats"] = json.loads(command(["docker", "stats", "--no-stream",
                                 "--format", "{{json .}}", name], timeout=15))
                             text = command(["docker", "exec", name, "sh", "-c",
-                                'for k in memory.current memory.peak memory.max memory.swap.current memory.swap.max memory/memory.usage_in_bytes memory/memory.max_usage_in_bytes; do '
-                                'if [ -r "/sys/fs/cgroup/$k" ]; then printf "%s=" "$k"; cat "/sys/fs/cgroup/$k"; fi; done'], timeout=15)
+                                CGROUP_COMMAND], timeout=15)
                             snapshot["cgroup_memory"] = dict(line.split("=",1) for line in text.splitlines() if "=" in line)
                         except Exception as error:
                             snapshot["errors"].append(str(error))
