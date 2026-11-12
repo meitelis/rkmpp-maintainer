@@ -10,6 +10,29 @@ from agent import AgentBlocked, AgentError, complete, run_agent
 
 
 class ProgressTests(unittest.TestCase):
+    def test_completed_edit_has_a_reserved_terminal_report_instead_of_another_noop(self):
+        actions = iter([
+            {"action":"read", "path":"go-vod/source.go"},
+            {"action":"upstream", "path":"go-vod/source.go"},
+            {"action":"replace", "path":"go-vod/source.go", "old":"old", "new":"new"},
+            {"action":"read", "path":"go-vod/source.go"},
+            {"action":"replace", "path":"go-vod/source.go", "old":"new", "new":"new"},
+        ])
+        allowed = []
+        def respond(endpoint, messages, **kwargs):
+            allowed.append(kwargs["allowed_actions"])
+            if len(allowed) == 6:
+                return json.dumps({"action":"finish", "summary":"Completed the source repair",
+                                   "review_complete":True,"blockers":[]})
+            return json.dumps(next(actions))
+        with patch("agent.complete",side_effect=respond), redirect_stdout(io.StringIO()):
+            review = run_agent(self.root,self.root,"repair",lambda _:"", "local","memories",
+                self.root/"agent.jsonl",turns=6,require_edit=True,
+                required_observations={"read":["go-vod/source.go"],"upstream":["go-vod/source.go"]})
+        self.assertEqual(allowed[-1],{"finish","block"})
+        self.assertEqual(review["source_edits"],1)
+        self.assertEqual(self.source.read_text(),"return new\n")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

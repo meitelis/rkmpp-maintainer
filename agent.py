@@ -213,6 +213,11 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
         recovery_actions = {tool for tool, _ in missing}
         allowed = ((DECISIONS | recovery_actions) if decision else ALL_ACTIONS) - (
             set() if can_finish else {"finish"})
+        terminal = turn == turns - 1
+        if terminal:
+            # An edit on the last action cannot be followed by a review. Reserve
+            # this action for a completed report or an explicit failure instead.
+            allowed = {"finish", "block"} if can_finish else {"block"}
         if decision:
             print(f"Controller: decision required; {turns - turn} turns remaining, {edits} source edits", flush=True)
         # Preserve the task, retain only recent tool observations, and bound input.
@@ -222,7 +227,7 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
         progress = {"turns_remaining": turns - turn, "edits": edits,
                     "decision_required": decision, "observations": ledger,
                     "missing_observations": missing, "source_edit_required": require_edit,
-                    "can_finish": can_finish}
+                    "can_finish": can_finish, "terminal_report_required": terminal}
         progress["required_pages"] = [{"action":tool, "path":name,
             "next_start":next((i for i in range(1, coverage[(tool,name)]["total"] + 1)
                                if i not in coverage[(tool,name)]["lines"]), 1)
@@ -243,6 +248,8 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
                 raise AgentError("Expected a JSON action object")
             kind, name = action["action"], action.get("path", "")
             print(f"Agent turn {turn+1}: {kind} {name}", flush=True)
+            if terminal and kind not in allowed:
+                raise AgentError("Decision required on final turn: finish a completed review or report a specific blocker")
             # Canonicalize before enforcing the recovery allowance or caching.
             if kind in {"read", "upstream", "diff", "replace"}:
                 source = official if kind in {"upstream", "diff"} else files
