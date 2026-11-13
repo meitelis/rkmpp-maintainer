@@ -152,7 +152,7 @@ class Docker:
                         except OSError as error:
                             print("Could not persist model metrics: " + str(error), file=sys.stderr, flush=True)
             finally:
-                self.cleanup(name, self.workspace / "model.log")
+                self.cleanup(name, Path(metrics_path).parent / "model.log" if metrics_path else self.workspace / "model.log")
 
     def run(self, image, root, args, log, timeout=1800):
         self.verify()

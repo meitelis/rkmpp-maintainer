@@ -33,10 +33,10 @@
       "bytes": 6642544576
     },
     "coding": {
-      "url": "https://huggingface.co/bartowski/Qwen3.8-27B-GGUF/resolve/f7f782271ce686458a3702c5d9f30d9c1354087c/Qwen3.8-27B-Q4_K_M.gguf",
-      "filename": "Qwen3.8-27B-Q4_K_M.gguf",
-      "sha256": "880a52af8317974f7b4b064a6bc29ff49e188b91aa218e08eea3078b6b1cc673",
-      "bytes": 17442399968,
+      "url": "https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/1f4ceb1041258b3fbfe59e1175d1321c6b41863b/Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf",
+      "filename": "Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf",
+      "sha256": "ddad34d487a85c5a5872b422a15b1f3db196c7912ecd939e7e1ef373cbc7ef29",
+      "bytes": 14583005504,
       "runtime": {
         "memory": "18g",
         "context_size": 16384,
@@ -54,17 +54,17 @@
         "context_checkpoints": 4
       },
       "generation": {
-        "temperature": 1.0,
-        "top_p": 0.95,
+        "temperature": 0.7,
+        "top_p": 0.8,
         "top_k": 20,
         "min_p": 0.0,
         "presence_penalty": 0.0,
         "max_tokens": 4096,
         "chat_template_kwargs": {
-          "enable_thinking": true
+          "enable_thinking": false
         },
         "reasoning_format": "deepseek",
-        "reasoning_effort": "medium"
+        "repeat_penalty": 1.05
       }
     }
   },

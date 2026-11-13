@@ -79,7 +79,9 @@ python3 /opt/maintainer/maintainer.py runtime-check
 python3 /opt/maintainer/maintainer.py smoke
 ```
 
-Coding uses **Qwen3.8-27B Q4_K_M** (17,442,399,968 bytes), pinned to Bartowski's exact revision and SHA-256. The Radxa profile selects cores 4–7 (the four faster cores), four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. The coding profile caps the prompt cache at 256 MiB and context checkpoints at four; these are separate from the Q8 KV cache. Dynamic progress is appended after the stable task/history prefix to permit recurrent-model prompt reuse. Actual peak memory and speed must be measured on the board before qualification. The model unloads before compilation. The publisher's thinking sampler is temperature 1.0, top-p 0.95 and top-k 20; reasoning effort is medium with a bounded reasoning budget.
+Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
+
+The dense Qwen3.8-27B profile passed the small repair after cache tuning, then timed out on the larger Memories review on the Radxa. That result does not establish unattended-upgrade suitability. Its cached weights and failed-run evidence are retained.
 
 The **smoke control** remains Ornith-1.5-9B Q5_K_M so ordinary ARM64 CI can validate the controller within its smaller RAM allowance. `--model-profile coding` runs that same protected exercise with Qwen on the Radxa. Model-specific settings and identities are recorded separately; a control-model CI pass does not qualify the larger model.
 
@@ -90,7 +92,7 @@ python3 /opt/maintainer/maintainer.py smoke --model-profile coding --wait-for-wi
 python3 /opt/maintainer/repair_check.py --model-profile coding --wait-for-window
 ```
 
-The coding model sources are [Qwen's official card](https://huggingface.co/Qwen/Qwen3.8-27B) and the [pinned GGUF file](https://huggingface.co/bartowski/Qwen3.8-27B-GGUF/blob/f7f782271ce686458a3702c5d9f30d9c1354087c/Qwen3.8-27B-Q4_K_M.gguf).
+The coding model sources are [Qwen's official coding-model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) and the [pinned GGUF file](https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/blob/1f4ceb1041258b3fbfe59e1175d1321c6b41863b/Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf).
 
 For the historical Memories upgrade:
 

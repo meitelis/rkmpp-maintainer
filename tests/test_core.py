@@ -21,9 +21,12 @@ class CoreTests(unittest.TestCase):
             with patch.dict(os.environ,{"MODEL_ENDPOINT":""}), patch.object(docker,"verify"), \
                  patch("runner.require_model_memory",return_value={}), \
                  patch("runner.download_model",return_value=Path(temp)/"models/large.gguf"), \
-                 patch("runner.command",return_value="") as invoke, patch("runner.urllib.request.urlopen") as health:
+                 patch("runner.command",return_value="") as invoke, patch("runner.CgroupSampler",return_value=SimpleNamespace(start=lambda:None,stop=lambda:None,last={},samples=0,errors=[])), \
+                 patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value=SimpleNamespace(status=200)
-                with docker.model(): pass
+                with docker.model(metrics_path=Path(temp)/"job/model-runtime.json"): pass
+            log_call=next(c for c in invoke.call_args_list if c.args[0][:2]==["docker","logs"])
+            self.assertEqual(log_call.kwargs["log"],Path(temp)/"job/model.log")
             args=next(c.args[0] for c in invoke.call_args_list if c.args[0][:2]==["docker","run"])
             for flag,value in [("--memory","18g"),("--memory-swap","18g"),("--cpuset-cpus","4-7"),
                                ("--cache-type-k","q8_0"),("--cache-type-v","q8_0"),("--flash-attn","on"),("--ubatch-size","128"),
