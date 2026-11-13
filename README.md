@@ -72,13 +72,27 @@ Deploy the stack. Its control should show **Total**, with a healthy builder and 
 
 With `MAINTAINER_ACTION=idle`, open the maintainer container's **Console**, select `/bin/sh`, and connect. The idle service does not own the job lock, so Console jobs can run without fighting a background monitor.
 
-First run:
+First validate failure handling with the actual isolated daemon, then run the model repair:
 
 ```sh
+python3 /opt/maintainer/maintainer.py runtime-check
 python3 /opt/maintainer/maintainer.py smoke
 ```
 
-Coding and smoke both use **Ornith-1.5-9B Q5_K_M**, pinned to the publisher's exact revision and SHA-256. The first run downloads 6.64 GB; a migrated model is reused after checksum validation. The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its upstream reference and actually repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before the image build/export. Untouched source fails the exercise. Success ends with `"kind": "real-local-model-smoke"`, `"exercise": "http-options-intersection"`, `"source_edit_verified": true` and `"status": "ready"`. This bounded repair test does not establish full repository-upgrade reliability.
+Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
+
+The dense Qwen3.8-27B profile passed the small repair after cache tuning, then timed out on the larger Memories review on the Radxa. That result does not establish unattended-upgrade suitability. Its cached weights and failed-run evidence are retained.
+
+The **smoke control** remains Ornith-1.5-9B Q5_K_M so ordinary ARM64 CI can validate the controller within its smaller RAM allowance. `--model-profile coding` runs that same protected exercise with Qwen on the Radxa. Model-specific settings and identities are recorded separately; a control-model CI pass does not qualify the larger model.
+
+The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its reference and repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before image build/export. Untouched source fails. Success reports `kind: real-local-model-smoke`, `source_edit_verified: true` and `status: ready`; this alone is not release-upgrade qualification.
+
+```sh
+python3 /opt/maintainer/maintainer.py smoke --model-profile coding --wait-for-window
+python3 /opt/maintainer/repair_check.py --model-profile coding --wait-for-window
+```
+
+The coding model sources are [Qwen's official coding-model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) and the [pinned GGUF file](https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/blob/1f4ceb1041258b3fbfe59e1175d1321c6b41863b/Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf).
 
 For the historical Memories upgrade:
 
@@ -88,11 +102,19 @@ python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base
 
 This starts from the actual pre-upgrade fork, reconciles upstream changes, lets Ornith inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
 
-The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must edit already-read source, complete its review, or report a specific blocker. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
+The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must complete a missing required observation, edit already-read source, complete its review, or report a specific blocker. During this restricted phase, observation tools may only access the exact outstanding required paths; unrelated reads remain forbidden. Required file and diff observations include every paginated line, with explicit continuation; a truncated first page cannot complete a required observation. An impossible minimum review budget fails before generation. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
 
 Successful upgrade jobs now report **`status: built`**, **`review_status: pending-human-review`** and **`deployment_approved: false`**. Exit code zero means the checks/build/export completed, not that deployment was approved. `agent-review.json` records the model's self-report, actual observations and edit count. `ready` is reserved for the isolated smoke exercise. Historical replays are labeled `kind: historical-replay`: their deliberately old starting point may omit later fixes from your current branch, so they are not automatic replacements for the live service. Earlier job evidence is retained with its original result format.
 
-The model gets four CPU threads, a 12 GiB memory ceiling and 16K context. Thinking is capped at 1,024 tokens per turn, with a 4,096-token output budget. The publisher's coding sampling settings are temperature 0.6, top-p 0.95 and top-k 20. llama.cpp separates thinking from the final schema-constrained JSON action; only that action enters the editing loop/transcript. The model unloads before tests and compilation. External `MODEL_ENDPOINT` servers must supply compatible JSON and reasoning handling and manage their own memory/lifetime. NPU operation remains unvalidated.
+Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
+
+Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU operation remains unvalidated.
+
+## Overnight admission
+
+New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-saving changes handled by the timezone database. An active job may finish after 08:00; another job must wait until the next window. Before admission, the board must be sufficiently idle: sampled CPU at most 25%, normalized load at most 0.3 and available RAM greater than the selected model ceiling plus 1 GiB headroom. Busy jobs retry admission after five minutes. The builder's low CPU share prioritizes other services when they become active.
+
+`watch` applies this gate to each candidate separately; outside the window it still performs lightweight release checks and wakes for the next opening. Manual heavy commands also respect the gate: `--wait-for-window` queues the command, while `--ignore-window` is an explicit manual/CI override. Waiting does not hold the maintenance job lock. Scheduling is enforced on the Radxa and continues independently of the laptop.
 
 ## Enable monitoring in Portainer
 
@@ -131,6 +153,6 @@ bash -n scripts/migrate-to-portainer.sh
 docker compose run --build --rm maintainer smoke
 ```
 
-CI runs the full Linux suite and real pinned-model smoke on ARM64. Source checks cover protected edits, credential isolation, process bounds, locking, reasoning/action separation, runtime limits, idle mode and a three-way upgrade fixture. A CI smoke pass is not a claim that the historical upgrade or hardware playback passed on the Radxa. Old Qwen2.5 results remain evidence for that older configuration.
+CI runs the full Linux suite and real pinned-model smoke on ARM64. Source checks cover protected edits, credential isolation, process bounds, locking, reasoning/action separation, runtime limits, idle mode and a three-way upgrade fixture. CI first runs the full Linux checks, then actual daemon/PHP failure checks and the real model repair; downloadable evidence excludes model weights and image archives. A CI smoke pass is not a claim that the historical upgrade or hardware playback passed on the Radxa. Old Qwen2.5 results remain evidence for that older configuration.
 
 Sources: [Portainer stack deployment](https://docs.portainer.io/user/docker/stacks/add), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [Ornith model](https://huggingface.co/ornith-ai/Ornith-1.5-9B), [pinned GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/tree/abdd624b12ebf020b767fff532ff44fe552b28c3).

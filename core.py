@@ -7,9 +7,11 @@ import os
 import re
 import signal
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from limits import BudgetExceeded, bounded_timeout, check_budget, require_space
 
 VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
@@ -35,7 +37,7 @@ def http_json(url, data=None, token=None, method=None):
     if encoded is not None:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, encoded, headers, method=method)
-    with urllib.request.urlopen(req, timeout=60) as response:
+    with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as response:
         return json.load(response)
 
 
@@ -53,14 +55,25 @@ def command(args, cwd=None, timeout=1800, log=None, env=None):
     """Bound the entire process group and keep noisy build output on disk."""
     with contextlib.ExitStack() as stack:
         output = stack.enter_context(open(log, "ab")) if log else subprocess.PIPE
+        deadline = time.monotonic() + bounded_timeout(timeout)
         process = subprocess.Popen(args, cwd=cwd, env=clean_env(env), stdin=subprocess.DEVNULL,
                                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            data, _ = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            while True:
+                check_budget()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                try:
+                    data, _ = process.communicate(timeout=min(5, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except (subprocess.TimeoutExpired, BudgetExceeded):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
-            raise RuntimeError(f"Command timed out: {args[0]}") from None
+            raise RuntimeError(f"Command timed out or exhausted job budget: {args[0]}") from None
         if log:
             with open(log, "rb") as handle:
                 handle.seek(max(0, Path(log).stat().st_size - 20000))
@@ -99,15 +112,19 @@ def download_model(spec, destination):
     if destination.exists() and digest(destination) == spec["sha256"]:
         return destination
     temporary = destination.with_suffix(".part")
+    # Existing invalid copies are preserved until a fully verified replacement exists.
+    require_space(destination.parent, spec["bytes"])
+    check_budget()
     req = urllib.request.Request(spec["url"], headers={"User-Agent": "rkmpp-maintainer"})
-    with urllib.request.urlopen(req, timeout=120) as response, temporary.open("wb") as target:
+    with urllib.request.urlopen(req, timeout=bounded_timeout(120)) as response, temporary.open("wb") as target:
         size = 0
         while block := response.read(1024 * 1024):
+            check_budget()
             size += len(block)
             if size > spec["bytes"]:
                 raise RuntimeError("Model download exceeds its pinned size")
             target.write(block)
-    if digest(temporary) != spec["sha256"]:
+    if size != spec["bytes"] or digest(temporary) != spec["sha256"]:
         temporary.unlink(missing_ok=True)
         raise RuntimeError("Model checksum mismatch")
     temporary.replace(destination)
@@ -121,7 +138,7 @@ def image_digest(repository, tag):
     req = urllib.request.Request("https://ghcr.io/v2/" + repository + "/manifests/" + tag,
         headers={"Authorization": "Bearer " + token,
                  "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"})
-    with urllib.request.urlopen(req, timeout=60) as response:
+    with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as response:
         content = response.read()
         digest = response.headers.get("Docker-Content-Digest", "")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):

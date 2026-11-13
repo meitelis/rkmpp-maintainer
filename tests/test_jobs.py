@@ -10,11 +10,38 @@ from agent import AgentBlocked, run_agent
 
 
 class JobTests(unittest.TestCase):
+    def test_once_cli_fails_when_an_attempted_candidate_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)/'config.json'
+            config.write_text('{}')
+            with patch.object(sys, 'argv', ['maintainer', 'once', '--config', str(config), '--workspace', temp]), \
+                 patch('maintainer.discover', return_value=[{'project':'memories', 'latest':'11.1.2', 'update':True}]), \
+                 patch('maintainer.run_job', return_value={'status':'failed', 'job':'failure-evidence'}):
+                with self.assertRaises(SystemExit) as stopped:
+                    maintainer.main()
+                self.assertEqual(stopped.exception.code, 1)
+
+    def test_once_cli_succeeds_when_no_update_is_needed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)/'config.json'
+            config.write_text('{}')
+            with patch.object(sys, 'argv', ['maintainer', 'once', '--config', str(config), '--workspace', temp]), \
+                 patch('maintainer.discover', return_value=[{'project':'memories', 'latest':'11.1.2', 'update':False}]), \
+                 patch('maintainer.run_job') as run:
+                maintainer.main()
+                run.assert_not_called()
+
     def test_false_finish_cannot_build_even_when_checks_would_pass(self):
         with tempfile.TemporaryDirectory() as temp:
             def prepare(project, job, *args):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
+                for base, name in [(root, 'go-vod/main.go'),
+                                   (root, 'memories_rkmpp_v11/lib/Listener/PlayerScriptListener.php'),
+                                   (upstream, 'lib/Service/BinExt.php')]:
+                    path = base/name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('review source\n')
                 return root, upstream, [], []
             def false_finish(*args, **kwargs):
                 return run_agent(*args, **kwargs, responder=lambda *_: json.dumps({
@@ -82,7 +109,7 @@ class JobTests(unittest.TestCase):
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
             @contextlib.contextmanager
-            def model():
+            def model(**kwargs):
                 events.append('model-loaded')
                 try: yield 'http://local'
                 finally: events.append('model-unloaded')

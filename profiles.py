@@ -30,18 +30,81 @@ def upstream_file(upstream, ref, name):
     return git(upstream, "show", ref + ":" + name)
 
 
-def active_files(root):
-    for name in git(root, "ls-files").splitlines():
-        if any(p in {"history", "verification", "upstream", "automation", "LICENSES"} for p in Path(name).parts):
+def sync_contracts(project, root, old, new, old_go=None, new_go=None):
+    """Update named release contracts, never arbitrary source/tests or evidence."""
+    root = Path(root)
+    names = ["README.md", "compose.yml"]
+    if project == "memories":
+        names += ["go-vod/Dockerfile.rkmpp", "go-vod/Dockerfile.rkmpp-test",
+                  "go-vod/README.md", "go-vod/cmd/govod-health/main.go",
+                  "scripts/build-v11.sh", "scripts/deploy-v11.sh", "scripts/install-player-v11.sh",
+                  "scripts/test-v11-deploy-preflight.sh", "scripts/test-v11-rkmpp.sh",
+                  ".github/workflows/check.yml", ".github/workflows/v11-hardware-image.yml"]
+    else:
+        names += ["Dockerfile.rkmpp", "scripts/build.sh"]
+    for name in names:
+        path = root / name
+        if not path.exists():
             continue
-        path = Path(root) / name
         if path.is_symlink():
-            raise RuntimeError("Tracked symlinks require manual review")
-        if path.is_file() and path.stat().st_size < 300000:
-            try:
-                yield path, path.read_text()
-            except UnicodeError:
+            raise RuntimeError("Release contract refuses symlinks: " + name)
+        text = path.read_text()
+        updated = text
+        if name == "README.md":
+            updated = updated.replace("Nextcloud Memories " + old, "Nextcloud Memories " + new, 1) if project == "memories" else updated.replace("Immich " + old, "Immich " + new, 1)
+            if project == "memories":
+                updated = re.sub(r"(Nextcloud Memories " + re.escape(new) + r"[^\n]*?/ go-vod )" + re.escape(old_go),
+                                 lambda m:m[1] + new_go, updated, count=1)
+        if project == "memories":
+            updated = updated.replace("memories-" + old + "-govod-" + old_go,
+                                      "memories-" + new + "-govod-" + new_go)
+            for before, after in [("Expected Memories " + old + ",", "Expected Memories " + new + ","),
+                                  ('"$version" = ' + old + ' ]', '"$version" = ' + new + ' ]'),
+                                  ("MEMORIES_TEST_VERSION=" + old + " ", "MEMORIES_TEST_VERSION=" + new + " "),
+                                  ("Memories " + old + " is connected to go-vod " + old_go,
+                                   "Memories " + new + " is connected to go-vod " + new_go)]:
+                updated = updated.replace(before, after)
+            if name == "go-vod/cmd/govod-health/main.go":
+                updated = updated.replace('health.Version != "' + old_go + '"', 'health.Version != "' + new_go + '"')
+                updated = updated.replace("go-vod " + old_go + " healthy", "go-vod " + new_go + " healthy")
+            if name.startswith(".github/workflows/"):
+                updated = updated.replace('const VERSION = "' + old_go + '"', 'const VERSION = "' + new_go + '"')
+            if name in {".github/workflows/v11-hardware-image.yml", "scripts/test-v11-rkmpp.sh"}:
+                updated = updated.replace("go-vod " + old_go, "go-vod " + new_go)
+            if name == "go-vod/README.md":
+                updated = updated.replace("# go-vod " + old_go, "# go-vod " + new_go, 1)
+            if name == "scripts/test-v11-deploy-preflight.sh":
+                updated = re.sub(r"^for version in (.*); do$", lambda m: "for version in " +
+                    " ".join(dict.fromkeys([v for v in m[1].split() if v != new] + [old])) + "; do", updated, flags=re.M)
+        else:
+            updated = re.sub(r"rkmpp-" + re.escape(old) + r"(?=-r\d)", "rkmpp-" + new, updated)
+        if updated != text:
+            path.write_text(updated)
+    if project == "memories":
+        for name, pattern in [
+            ("memories_rkmpp_v11/lib/Listener/PlayerScriptListener.php", r"in_array\(\$version, (\[[^\]]+\])"),
+            ("scripts/test-v11-compat.php", r"foreach \((\[[^\]]+\]) as \$supported\)")]:
+            path = root / name
+            if not path.exists():
                 continue
+            text = path.read_text()
+            match = re.search(pattern, text)
+            if not match:
+                raise RuntimeError("Version support contract changed: " + name)
+            supported = match[1]
+            if "'" + new + "'" not in supported:
+                supported = supported[:-1] + ", '" + new + "']"
+            updated = text[:match.start(1)] + supported + text[match.end(1):]
+            if name == "scripts/test-v11-compat.php":
+                unsupported = re.search(r"foreach \((\[[^\]]+\]) as \$unsupported\)", updated)
+                if unsupported:
+                    values = re.findall(r"'([^']+)'", unsupported[1])
+                    values = [v for v in values if v != new]
+                    replacement = "[" + ", ".join(repr(v) for v in values) + "]"
+                    updated = updated[:unsupported.start(1)] + replacement + updated[unsupported.end(1):]
+                    count = 6 * len(re.findall(r"'[^']+'", supported)) + len(values)
+                    updated = re.sub(r"listener: \d+ cases", f"listener: {count} cases", updated)
+            path.write_text(updated)
 
 
 def reconcile(project, root, upstream, old, new, old_ref, new_ref):
@@ -87,37 +150,7 @@ def reconcile(project, root, upstream, old, new, old_ref, new_ref):
                 command(["git", "merge-file", str(target), str(base), str(other)], timeout=30)
             except RuntimeError:
                 notes.append("Resolve upstream merge conflict: " + relative)
-    for path, text in active_files(root):
-        if path.suffix == ".md":
-            # Update the advertised target only; never relabel historical measurements.
-            if path == root / "README.md":
-                updated = text.replace(old, new, 1)
-            else:
-                continue
-        elif path.name == "NOTICE":
-            continue
-        else:
-            updated = text.replace(old, new)
-        relative = path.relative_to(root).as_posix()
-        protocol_file = (relative == "go-vod/main.go" or relative.startswith(("go-vod/api/", "go-vod/core/", "go-vod/cmd/")) or relative.startswith(("scripts/", ".github/workflows/")) or path.name.startswith("Dockerfile") or relative == "compose.yml")
-        if old_go and old_go != new_go and protocol_file:
-            updated = updated.replace(old_go, new_go)
-        if project == "memories" and path.name == "test-v11-deploy-preflight.sh":
-            # The new current version must not remain in the negative test table.
-            updated = re.sub(r"^for version in (.*); do$", lambda m: "for version in " +
-                " ".join(dict.fromkeys([v for v in m[1].split() if v != new] + [old])) + "; do", updated, flags=re.M)
-        if project == "memories" and path.name in {"PlayerScriptListener.php", "test-v11-compat.php"}:
-            # Preserve older verified player hooks while adding the new one.
-            updated = re.sub(r"\['11\.0\.2'[^\]]*\]", lambda m: m[0][:-1] +
-                (", '" + old + "'" if "'" + old + "'" not in m[0] else "") + "]", updated)
-            if path.name == "test-v11-compat.php":
-                supported = re.search(r"foreach \((\[[^\]]+\]) as \$supported\)", updated)
-                unsupported = re.search(r"foreach \((\[[^\]]+\]) as \$unsupported\)", updated)
-                if supported and unsupported:
-                    n = 6 * len(re.findall(r"'[^']+'", supported[1])) + len(re.findall(r"'[^']+'", unsupported[1]))
-                    updated = re.sub(r"listener: \d+ cases", f"listener: {n} cases", updated)
-        if updated != text:
-            path.write_text(updated)
+    sync_contracts(project, root, old, new, old_go, new_go)
     if project == "memories":
         save_json(root / "upstream-version.json", {"repository": PROJECTS[project]["upstream"],
             "version": new, "tag": "v" + new, "commit": new_ref, "goVodVersion": new_go})
