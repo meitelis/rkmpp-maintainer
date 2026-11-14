@@ -43,7 +43,9 @@ services:
       DOCKER_TLS_CERTDIR: ""
       AUTO_UPDATE: ${AUTO_UPDATE:-false}
       MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
-    command: ["${MAINTAINER_ACTION:-idle}"]
+    # Monitor releases by default; AUTO_UPDATE=false prevents unattended builds.
+    # Portainer MAINTAINER_ACTION environment setting may override this default.
+    command: ["${MAINTAINER_ACTION:-watch}"]
     volumes:
       - type: bind
         source: /armbian/rkmpp-maintainer/data
