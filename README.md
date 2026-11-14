@@ -120,7 +120,7 @@ New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-
 
 After testing, update the stack environment in Portainer to `MAINTAINER_ACTION=watch`. Keep `AUTO_UPDATE=false` for release checks every six hours. Once real upgrade tests pass, set `AUTO_UPDATE=true` in Portainer to prepare candidates sequentially for new stable releases.
 
-Each release is attempted once automatically; failed-job evidence is retained. Android-only tags, prereleases and drafts are ignored. The monitor does not merge, publish or deploy. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
+Successful candidate builds are remembered. Failed builds retain their evidence and are retried after a configurable cooldown (default one hour), up to three attempts per release; exhausted attempts require manual intervention. The watcher releases the job lock between polls, so manual Console jobs can run while it sleeps. Android-only tags, prereleases and drafts are ignored. The monitor does not merge, publish or deploy. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
 
 ## Update the maintainer
 
