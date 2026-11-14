@@ -60,7 +60,7 @@ In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Re
 | Repository URL | `https://github.com/meitelis/rkmpp-maintainer` |
 | Reference | `refs/heads/main` |
 | Compose path | `portainer-stack.yml` |
-| `MAINTAINER_ACTION` | `idle` initially |
+| `MAINTAINER_ACTION` | `watch` by default; set `idle` for manual Console jobs |
 | `AUTO_UPDATE` | `false` initially |
 | `DIND_STORAGE_DRIVER` | `overlay2` unless the existing builder used another driver |
 
@@ -118,7 +118,7 @@ New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-
 
 ## Enable monitoring in Portainer
 
-After testing, update the stack environment in Portainer to `MAINTAINER_ACTION=watch`. Keep `AUTO_UPDATE=false` for release checks every six hours. Once real upgrade tests pass, set `AUTO_UPDATE=true` in Portainer to prepare candidates sequentially for new stable releases.
+The Git-managed Portainer stack defaults to `MAINTAINER_ACTION=watch` and `AUTO_UPDATE=false`: check releases every six hours without automatically building updates. An explicit `MAINTAINER_ACTION=idle` value saved in Portainer overrides the Git default; change or remove that value in **Edit stack settings** if necessary. Changes in GitHub require **Pull and redeploy** in Portainer unless GitOps polling or a webhook is enabled. After real upgrade tests pass, set `AUTO_UPDATE=true` in Portainer to prepare candidates sequentially for new stable releases.
 
 Each release is attempted once automatically; failed-job evidence is retained. Android-only tags, prereleases and drafts are ignored. The monitor does not merge, publish or deploy. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
 
