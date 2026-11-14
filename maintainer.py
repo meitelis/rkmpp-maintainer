@@ -275,6 +275,80 @@ def smoke(config, workspace, model_profile="smoke"):
     return result
 
 
+
+def release_attempt_due(entry, now, max_attempts, retry_seconds, *, watch=False):
+    """Decide whether an unapproved candidate deserves another bounded attempt."""
+    if not entry:
+        return True, "new", 0
+    if entry.get("status") == "built":
+        return False, "built", int(entry.get("attempts", 1))
+    attempts = int(entry.get("attempts", 1))
+    if attempts >= max_attempts:
+        return False, "retry-limit", attempts
+    previous = entry.get("last_attempt_at")
+    if watch and previous:
+        try:
+            last = datetime.datetime.fromisoformat(previous)
+            if last.tzinfo is not None and (now - last).total_seconds() < retry_seconds:
+                return False, "cooldown", attempts
+        except ValueError:
+            pass  # Old/incomplete state is retried, not permanently skipped.
+    return True, "retry", attempts
+
+
+def poll_releases(args, config, workspace, profile):
+    """One bounded discovery cycle. Caller holds the job lock; caller owns sleeping."""
+    delay = max(1, int(config.get("poll_seconds", 21600)))
+    failed = deferred = False
+    records = discover(workspace)
+    print(json.dumps(records), flush=True)
+    if args.action not in {"once", "watch"} or (
+            args.action == "watch" and os.environ.get("AUTO_UPDATE") != "true"):
+        return delay, failed, deferred
+
+    state_path = workspace / "state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    max_attempts = max(1, int(config.get("release_max_attempts", 3)))
+    retry_seconds = max(60, int(config.get("release_retry_seconds", 3600)))
+    for record in records:
+        if not record["update"]:
+            continue
+        key = record["project"] + ":" + record["latest"]
+        now = datetime.datetime.now(datetime.timezone.utc)
+        due, reason, attempts = release_attempt_due(
+            state.get(key), now, max_attempts, retry_seconds, watch=args.action == "watch")
+        if not due:
+            if reason == "cooldown":
+                last = datetime.datetime.fromisoformat(state[key]["last_attempt_at"])
+                seconds = max(1, int((last + datetime.timedelta(seconds=retry_seconds) - now).total_seconds()) + 1)
+                delay = min(delay, seconds)
+                deferred = True
+            elif reason == "retry-limit":
+                failed = True
+            if reason != "built":
+                print(json.dumps({"status": reason, "project": record["project"],
+                                  "version": record["latest"], "attempts": attempts}), flush=True)
+            continue
+
+        gate = admission(config, profile) if args.action == "watch" or not args.ignore_window else {"allowed": True}
+        if not gate["allowed"]:
+            deferred = True
+            print(json.dumps({"status": "deferred", "project": record["project"], **gate}), flush=True)
+            delay = min(delay, gate.get("retry_seconds", 300))
+            continue
+
+        result = run_job(record["project"], config, workspace, record["latest"],
+                         publish_code=args.publish, no_agent=args.no_agent, model_profile=profile)
+        state[key] = {"status": result["status"], "job": result["job"],
+                      "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
+        save_json(state_path, state)
+        print(json.dumps(result), flush=True)
+        if result["status"] != "built":
+            failed = True
+            delay = min(delay, retry_seconds)
+    return delay, failed, deferred
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check"])
@@ -299,7 +373,7 @@ def main():
         while True:
             time.sleep(60)
     profile = args.model_profile or ("smoke" if args.action == "smoke" else "coding")
-    if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once", "watch"}:
+    if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
         # Reap abandoned owned workloads before judging whether enough RAM is idle.
         with locked(workspace / "maintainer.lock"):
             recover_jobs(workspace)
@@ -307,6 +381,21 @@ def main():
     if args.action in {"runtime-check", "smoke", "run", "once"}:
         if not wait_for_window(config, profile, wait=args.wait_for_window, ignore=args.ignore_window)["allowed"]:
             raise SystemExit(2)
+    if args.action == "watch":
+        while True:
+            try:
+                with locked(workspace / "maintainer.lock"):
+                    recover_jobs(workspace)
+                    if config.get("work_window", {}).get("enabled", False):
+                        Docker(config, workspace).reap()
+                    delay, _, _ = poll_releases(args, config, workspace, profile)
+            except RuntimeError as error:
+                if str(error) != "Another maintainer job is running":
+                    raise
+                delay = max(1, int(config.get("work_window", {}).get("idle_retry_seconds", 300)))
+                print(json.dumps({"status": "busy", "reason": str(error)}), flush=True)
+            # Never hold the job lock while waiting for the next poll.
+            time.sleep(max(1, delay))
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
         if args.action == "runtime-check":
@@ -327,7 +416,9 @@ def main():
             job = workspace / "jobs" / ("prepare-" + args.repo + "-" + uuid.uuid4().hex[:8])
             job.mkdir(parents=True)
             root, upstream, notes, changes = prepare(args.repo, job, args.target.removeprefix("v"), args.base_ref, args.source_version)
-            print(json.dumps({"job": str(job), "source": str(root), "notes": notes, "changed_files": len(changes)}, indent=2))
+            print(json.dumps({"job": str(job), "source": str(root), "notes": notes,
+                              "status": "needs-reconciliation" if notes else "prepared",
+                              "changed_files": len(changes)}, indent=2))
             return
         if args.action == "run":
             if not args.repo or not args.target:
@@ -338,37 +429,11 @@ def main():
             if result["status"] != "built":
                 raise SystemExit(1)
             return
-        while True:
-            failed = False
-            deferred = False
-            delay = config.get("poll_seconds", 21600)
-            records = discover(workspace)
-            print(json.dumps(records), flush=True)
-            if args.action == "once" or (args.action == "watch" and os.environ.get("AUTO_UPDATE") == "true"):
-                state_path = workspace / "state.json"
-                state = json.loads(state_path.read_text()) if state_path.exists() else {}
-                for record in records:
-                    key = record["project"] + ":" + record["latest"]
-                    if record["update"] and key not in state:
-                        gate = admission(config, profile) if args.action == "watch" or not args.ignore_window else {"allowed":True}
-                        if not gate["allowed"]:
-                            deferred = True
-                            print(json.dumps({"status":"deferred", "project":record["project"], **gate}), flush=True)
-                            delay = min(delay, gate.get("retry_seconds",300))
-                            continue
-                        result = run_job(record["project"], config, workspace, record["latest"],
-                                         publish_code=args.publish, no_agent=args.no_agent, model_profile=profile)
-                        state[key] = {"status": result["status"], "job": result["job"]}
-                        failed = failed or result["status"] != "built"
-                        save_json(state_path, state)
-                        print(json.dumps(result), flush=True)
-            if args.action != "watch":
-                if args.action == "once" and failed:
-                    raise SystemExit(1)
-                if args.action == "once" and deferred:
-                    raise SystemExit(2)
-                break
-            time.sleep(max(1, delay))
+        _, failed, deferred = poll_releases(args, config, workspace, profile)
+        if args.action == "once" and failed:
+            raise SystemExit(1)
+        if args.action == "once" and deferred:
+            raise SystemExit(2)
 
 
 if __name__ == "__main__":
