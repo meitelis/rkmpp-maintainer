@@ -87,6 +87,8 @@ def sync_contracts(project, root, old, new, old_go=None, new_go=None):
             ("memories_rkmpp_v11/lib/Listener/PlayerScriptListener.php", r"in_array\(\$version, (\[[^\]]+\])"),
             ("scripts/test-v11-compat.php", r"foreach \((\[[^\]]+\]) as \$supported\)")]:
             path = root / name
+            if path.is_symlink():
+                raise RuntimeError("Version support contract refuses symlinks: " + name)
             if not path.exists():
                 continue
             text = path.read_text()
