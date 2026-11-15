@@ -1,5 +1,6 @@
 """An isolated Docker daemon is used for models, checks and candidate builds."""
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -257,11 +258,20 @@ class Docker:
                     timeout=3600, log=log)
             evidence = validate_memories_matrix(scratch)
             # The shipping runtime must contain precisely the smoke-tested engine.
-            tested_hash = command(["docker", "run", "--rm", "--network", "none",
-                "--entrypoint", "sha256sum", "local/memories-rkmpp:v11-smoke",
-                "/app/go-vod"], timeout=60).split()[0]
-            shipping_hash = command(["docker", "run", "--rm", "--network", "none",
-                "--entrypoint", "sha256sum", tag, "/app/go-vod"], timeout=60).split()[0]
+            def extract_hash(image, filename):
+                name = "rkmpp-maintainer-hash-" + uuid.uuid4().hex[:12]
+                output = scratch / filename
+                try:
+                    command(["docker", "create", "--name", name,
+                             "--label", "rkmpp.maintainer.transient=true",
+                             image], timeout=60)
+                    command(["docker", "cp", name + ":/app/go-vod", str(output)], timeout=120)
+                    with output.open("rb") as stream:
+                        return hashlib.file_digest(stream, "sha256").hexdigest()
+                finally:
+                    self.cleanup(name)
+            tested_hash = extract_hash("local/memories-rkmpp:v11-smoke", "tested-go-vod")
+            shipping_hash = extract_hash(tag, "shipping-go-vod")
             if tested_hash != shipping_hash:
                 raise RuntimeError("Memories shipping go-vod differs from hardware-tested binary")
             evidence["go_vod_sha256"] = shipping_hash
