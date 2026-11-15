@@ -18,8 +18,9 @@ def restore_alarm(handler, timer, started):
     signal.setitimer(signal.ITIMER_REAL, 0)
     signal.signal(signal.SIGALRM, handler)
     remaining = timer[0] - (time.monotonic() - started)
-    if timer[0] > 0 and remaining > 0:
-        signal.setitimer(signal.ITIMER_REAL, remaining, timer[1])
+    if timer[0] > 0:
+        # A deadline expiring during cleanup must remain armed when restored.
+        signal.setitimer(signal.ITIMER_REAL, max(0.001, remaining), timer[1])
 
 
 class BudgetExceeded(RuntimeError):
