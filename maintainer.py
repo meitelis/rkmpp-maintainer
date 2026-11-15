@@ -97,19 +97,27 @@ def publish(project, root, target, job):
     if not elements:
         raise RuntimeError("No source change to publish")
     api = "repos/" + profile["fork"]
+    # Reject publication against a main branch that moved after qualification.
+    # A silently stale fork would invalidate the tested candidate's source base.
+    if github(api + "/git/ref/heads/main")["object"]["sha"] != base:
+        raise RuntimeError("Fork main advanced after candidate build; reconcile and requalify before publishing")
     base_tree = github(api + "/git/commits/" + base)["tree"]["sha"]
     tree = github(api + "/git/trees", {"base_tree": base_tree, "tree": elements})["sha"]
     commit = github(api + "/git/commits", {"message": f"Prepare {project} {target} RKMPP candidate",
                                           "tree": tree, "parents": [base]})["sha"]
     branch = "automation/" + project + "-" + target + "-" + job.name[-8:]
     github(api + "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit})
-    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": True,
-        "title": f"Candidate: {project} {target} RKMPP update",
-        "body": "Prepared by the local Radxa maintainer. Source checks and the candidate build passed locally. "
-                "This is a draft for review and manual deployment. Hardware playback is not established by compilation. "
-                "The local job contains logs, image.tar, result.json and the matching Memories helper where applicable. "
-                "The controller does not merge or deploy."})
-    return {"branch": branch, "commit": commit, "pull_request": pr["html_url"]}
+    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": False,
+        "title": f"Qualified candidate: {project} {target} RKMPP update",
+        "body": "Prepared by the local Radxa maintainer after source checks, a complete ARM64 build, "
+                "and isolated RK3588 hardware qualification of the exact exported image ID. "
+                "Synthetic hardware tests do not establish real browser/phone playback. "
+                "REVIEW ONLY — do not merge until the owner imports the image, tests production playback "
+                "and explicitly accepts this exact PR/image. Failed attempts never publish PRs. "
+                "The local job retains logs, image.tar, result.json and the matching Memories helper where applicable. "
+                "The controller never deploys production apps."})
+    return {"branch": branch, "commit": commit, "pull_request": pr["html_url"],
+            "pull_request_number": pr["number"], "publication_status": "published"}
 
 
 def review_targets(project, root, changes):
