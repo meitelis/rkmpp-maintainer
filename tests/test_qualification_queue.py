@@ -1,11 +1,12 @@
 import contextlib
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from qualification_queue import run_suite
+from qualification_queue import hardware_checks, run_suite
 
 
 class QualificationQueueTests(unittest.TestCase):
@@ -37,6 +38,31 @@ class QualificationQueueTests(unittest.TestCase):
             self.assertEqual(stored["status"],"waiting")
             self.assertEqual(stored["next_step"],"later")
             later.assert_not_called()
+
+    def test_hardware_runner_prepares_writable_go_tmpdir_before_tests(self):
+        """A missing /cache/tmp must not abort all Go hardware tests."""
+        with tempfile.TemporaryDirectory() as temp:
+            observed=[]
+            def fake_command(args, **kwargs):
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return "sha256:qualified"
+                self.assertEqual(args[:2], ["docker", "run"])
+                mount=next(item for item in args if item.startswith("type=bind,src="))
+                cache=Path(mount.removeprefix("type=bind,src=").removesuffix(",dst=/cache"))
+                temporary=cache/"tmp"
+                self.assertTrue(temporary.is_dir())
+                self.assertEqual(stat.S_IMODE(temporary.stat().st_mode), 0o1777)
+                observed.append(temporary)
+                Path(kwargs["log"]).write_text("--- PASS: TestRKMPPHardwareFixture (0.01s)\\n")
+                return "--- PASS: TestRKMPPHardwareFixture (0.01s)"
+            with patch("qualification_queue.Docker") as docker, \
+                 patch("qualification_queue.job_budget", side_effect=lambda *a, **k: contextlib.nullcontext()), \
+                 patch("qualification_queue.command", side_effect=fake_command):
+                result=hardware_checks({},Path(temp),"sha256:qualified")
+                self.assertEqual(result["status"],"passed",result.get("error"))
+                self.assertEqual(len(result["tests"]),3)
+                self.assertEqual(len(observed),3)
+                docker.return_value.verify.assert_called_once()
 
     def test_a_failed_revision_is_not_retried_implicitly(self):
         with tempfile.TemporaryDirectory() as temp:
