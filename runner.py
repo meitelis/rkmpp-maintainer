@@ -1,7 +1,9 @@
 """An isolated Docker daemon is used for models, checks and candidate builds."""
 import contextlib
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -202,10 +204,95 @@ class Docker:
                     tag, "--test", "tests/playback-fragments.test.mjs"], timeout=1800, log=log)
             finally:
                 self.cleanup(name)
+            report = Path(log).read_text(errors="replace")
+            # A zero exit code can hide a skipped Node test; all three
+            # original/HEVC/AAC fragment cases are mandatory, with no skips.
+            def count(key):
+                match = re.search(r"(?m)^\s*[ℹ#]?\s*" + key + r"\s+(\d+)\s*$", report)
+                return int(match[1]) if match else None
+            if (count("tests"), count("pass"), count("fail"), count("skipped")) != (3, 3, 0, 0):
+                raise RuntimeError("Incomplete Immich FFmpeg fragment qualification: " + str(log))
+
+    def hardware(self, project, root, tag, log):
+        """Run the built RKMPP image through on-board hardware tests.
+
+        Only the isolated Docker daemon is accepted; production image stores,
+        application databases and real media are never mounted.
+        """
+        self.verify()
+        root = Path(root).resolve()
+        scratch = root.parent / Path(log).stem
+        scratch.mkdir(exist_ok=False)
+        image_id = command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
+        arch = command(["docker", "image", "inspect", tag, "--format", "{{.Architecture}}"], timeout=30)
+        if arch != "arm64":
+            raise RuntimeError("Hardware qualification requires an ARM64 candidate")
+        for path in ("/dev/dri", "/dev/dma_heap", "/dev/mpp_service", "/dev/rga"):
+            command(["docker", "run", "--rm", "--network", "none", "--privileged",
+                     "--label", "rkmpp.maintainer.transient=true",
+                     "--entrypoint", "sh", self.config["node_image"],
+                     "-c", f"test -e {path}"], timeout=60)
+        if project == "immich":
+            from hardware_gate import validate_immich_report
+            name = "rkmpp-maintainer-hardware-" + uuid.uuid4().hex[:12]
+            label = "candidate-" + root.parent.name[-8:]
+            try:
+                command(["docker", "run", "--rm", "--privileged", "--network", "none",
+                         "--name", name, "--label", "rkmpp.maintainer.transient=true",
+                         "--cpus", "4", "--memory", "6g",
+                         "-v", str(root / "scripts/verify-hardware.mjs") + ":/opt/verify-hardware.mjs:ro",
+                         "-v", str(scratch) + ":/scratch", "--entrypoint", "node", tag,
+                         "/opt/verify-hardware.mjs", "--scratch", "/scratch",
+                         "--hdr", "--sdr10", "--small", "--audio",
+                         "--fallback", "--rotation", "--memories", "--label", label],
+                        timeout=3600, log=log)
+            finally:
+                self.cleanup(name)
+            evidence = validate_immich_report(scratch, label)
+        elif project == "memories":
+            from hardware_gate import validate_memories_matrix
+            # The upstream fork's matrix builds its own separate smoke image and
+            # invokes its compiled ffmpeg/core/api Go tests on real MPP/RGA.
+            command(["bash", "scripts/test-v11-rkmpp.sh", "--matrix"], cwd=root,
+                    env={"RKMPP_SMOKE_SKIP_BUILD": "1", "RKMPP_SMOKE_OUTPUT": str(scratch)},
+                    timeout=3600, log=log)
+            evidence = validate_memories_matrix(scratch)
+            # The shipping runtime must contain precisely the smoke-tested engine.
+            def extract_hash(image, filename):
+                name = "rkmpp-maintainer-hash-" + uuid.uuid4().hex[:12]
+                output = scratch / filename
+                try:
+                    command(["docker", "create", "--name", name,
+                             "--label", "rkmpp.maintainer.transient=true",
+                             image], timeout=60)
+                    command(["docker", "cp", name + ":/app/go-vod", str(output)], timeout=120)
+                    with output.open("rb") as stream:
+                        return hashlib.file_digest(stream, "sha256").hexdigest()
+                finally:
+                    self.cleanup(name)
+            tested_hash = extract_hash("local/memories-rkmpp:v11-smoke", "tested-go-vod")
+            shipping_hash = extract_hash(tag, "shipping-go-vod")
+            if tested_hash != shipping_hash:
+                raise RuntimeError("Memories shipping go-vod differs from hardware-tested binary")
+            evidence["go_vod_sha256"] = shipping_hash
+        else:
+            raise RuntimeError("No RKMPP hardware qualification for " + project)
+        if command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30) != image_id:
+            raise RuntimeError("Candidate image identity changed during hardware tests")
+        evidence["image_id"] = image_id
+        evidence["arch"] = arch
+        return evidence
 
     def export(self, tag, destination):
         self.verify()
         size = int(command(["docker", "image", "inspect", tag, "--format", "{{.Size}}"], timeout=30))
         require_space(self.workspace, int(size * 1.2))
         command(["docker", "save", "-o", str(destination), tag], timeout=1800)
+        archive = Path(destination)
+        if not archive.is_file() or archive.stat().st_size <= 0:
+            raise RuntimeError("Docker export archive missing or empty")
+        with archive.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        archive.with_suffix(archive.suffix + ".sha256").write_text(
+            digest + "  " + archive.name + "\n")
         return command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)

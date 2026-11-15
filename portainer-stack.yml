@@ -12,6 +12,14 @@ services:
     environment:
       DOCKER_TLS_CERTDIR: ""
     command: ["--label=rkmpp.maintainer=isolated", "--storage-driver=${DIND_STORAGE_DRIVER:-overlay2}"]
+    # Expose RK3588 media devices to this isolated daemon so it can validate
+    # hardware on the actual board before exporting any deployable candidate.
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga
+      - /dev/mali0:/dev/mali0
     volumes:
       - type: bind
         source: /armbian/rkmpp-maintainer/builder
@@ -43,6 +51,14 @@ services:
       DOCKER_TLS_CERTDIR: ""
       AUTO_UPDATE: ${AUTO_UPDATE:-false}
       MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
+    # The Memories on-board matrix enumerates /dev nodes in the controller.
+    # Hardware is exercised only inside the isolated Docker builder.
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga
+      - /dev/mali0:/dev/mali0
     # Monitor releases by default; AUTO_UPDATE=false prevents unattended builds.
     # Portainer MAINTAINER_ACTION environment setting may override this default.
     command: ["${MAINTAINER_ACTION:-watch}"]

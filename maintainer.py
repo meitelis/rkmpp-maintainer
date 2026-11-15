@@ -152,36 +152,59 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             task += "Build commands, workflows and tests are protected. Report blockers instead of bypassing them."
             errors = ""
             tag = "local/" + project + "-rkmpp:candidate-" + target + "-" + job.name[-8:]
-            for attempt in range(1 if no_agent else config["repair_rounds"]):
+            rounds = 1 if no_agent else config["repair_rounds"]
+            hardware = None
+            for attempt in range(rounds):
                 if not no_agent:
                     phase(job, result, f"model-review-{attempt + 1}")
                     result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
                                               "attempt": attempt + 1}
-                    # Model lifetime ends before compiler/build memory is needed.
-                    with docker.model(smoke=model_profile == "smoke", metrics_path=job / f"model-runtime-{attempt}.json") as endpoint:
+                    # The model edits the candidate. It is unloaded before builds and hardware tests.
+                    with docker.model(smoke=model_profile == "smoke",
+                                      metrics_path=job / f"model-runtime-{attempt}.json") as endpoint:
                         record_runtime(job, docker)
-                        review = run_agent(root, upstream, task + "\nLast check failures:\n" + errors[-10000:],
+                        review = run_agent(root, upstream,
+                            task + "\nLast failure (repair before resubmitting):\n" + errors[-10000:],
                             lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
-                            project, job / "agent.jsonl", turns=config["agent_turns"],
+                            project, job / f"agent-{attempt}.jsonl", turns=config["agent_turns"],
                             generation=settings(config, model_profile)[2],
                             required_observations=review_targets(project, root, changes))
                         result["agent_review"] = review
+                        save_json(job / f"agent-review-{attempt}.json", review)
                         save_json(job / "agent-review.json", review)
-                        (job / "agent-summary.txt").write_text(review["summary"] + "\n")
+                        (job / f"agent-summary-{attempt}.txt").write_text(review["summary"] + "\n")
                 try:
                     phase(job, result, f"checks-{attempt + 1}")
                     validate(root)
                     docker.checks(project, root, job / f"checks-{attempt}.log")
                     phase(job, result, f"build-{attempt + 1}")
                     docker.build(project, root, tag, job / f"build-{attempt}.log")
+                    phase(job, result, f"hardware-{attempt + 1}")
+                    hardware = docker.hardware(project, root, tag, job / f"hardware-{attempt}.log")
+                    if not isinstance(hardware, dict) or hardware.get("ok") is not True or not hardware.get("image_id"):
+                        raise RuntimeError("Independent RK3588 hardware qualification was not completed")
+                    result["hardware_qualification"] = hardware
+                    result["repair_attempts"] = attempt + 1
                     break
                 except RuntimeError as error:
                     errors = str(error)
-                    if attempt + 1 == (1 if no_agent else config["repair_rounds"]):
-                        raise
+                    result.setdefault("repair_failures", []).append({
+                        "attempt": attempt + 1, "error": errors[-12000:]})
+                    save_json(job / "result.json", result)
+                    if attempt + 1 == rounds:
+                        raise RuntimeError(f"Candidate failed after {rounds} check/build/hardware attempts: {errors}") from error
+            if hardware is None:
+                raise RuntimeError("Missing successful RK3588 hardware qualification")
             phase(job, result, "export")
             result.update(status="built", image=tag,
                           image_id=docker.export(tag, job / "image.tar"))
+            if result["image_id"] != hardware["image_id"]:
+                raise RuntimeError("Exported image differs from hardware-qualified candidate")
+            # A verified export can be installed manually; it never authorizes
+            # the maintainer to modify running applications or their databases.
+            reviewed = not no_agent and result["agent_review"].get("review_complete") is True
+            result["ready_to_deploy"] = bool(reviewed)
+            result["artifact_status"] = "ready-to-deploy" if reviewed else "requires-source-review"
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
             if project == "memories":
@@ -196,7 +219,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     result["publication_error"] = str(error)
         return result
     except Exception as error:
-        result.update(status="failed", error=str(error))
+        result.update(status="failed", error=str(error), ready_to_deploy=False, artifact_status="blocked")
         (job / "error.txt").write_text(traceback.format_exc())
         return result
     finally:

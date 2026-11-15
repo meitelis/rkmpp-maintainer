@@ -73,6 +73,8 @@ def sync_contracts(project, root, old, new, old_go=None, new_go=None):
                 updated = updated.replace("go-vod " + old_go, "go-vod " + new_go)
             if name == "go-vod/README.md":
                 updated = updated.replace("# go-vod " + old_go, "# go-vod " + new_go, 1)
+            if name == "scripts/test-v11-rkmpp.sh":
+                updated = updated.replace("go-vod " + old_go, "go-vod " + new_go)
             if name == "scripts/test-v11-deploy-preflight.sh":
                 updated = re.sub(r"^for version in (.*); do$", lambda m: "for version in " +
                     " ".join(dict.fromkeys([v for v in m[1].split() if v != new] + [old])) + "; do", updated, flags=re.M)
