@@ -534,7 +534,12 @@ def poll_releases(args, config, workspace, profile):
             result.update(status="failed", ready_to_deploy=False,
                           artifact_status="blocked",
                           error="No verified, importable image.tar was produced")
-            save_json(Path(result["job"]) / "result.json", result)
+            # The normal job writes its own result. Never create an unrelated
+            # path from a malformed return value while rejecting an unsafe build.
+            expected_jobs = (workspace / "jobs").resolve()
+            job_path = Path(result.get("job", "")).resolve()
+            if job_path.parent == expected_jobs and (job_path / "result.json").is_file():
+                save_json(job_path / "result.json", result)
         state[key] = {"status": result["status"], "job": result["job"],
                       "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
         save_json(state_path, state)
