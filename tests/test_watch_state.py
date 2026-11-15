@@ -36,7 +36,9 @@ class WatcherTests(unittest.TestCase):
             workspace = Path(temp)
             records = [{"project": "immich", "latest": "3.4.1", "update": True}]
             args = SimpleNamespace(action="once", ignore_window=False, publish=False, no_agent=True)
-            result = iter([{"status": "failed", "job": "job1"}, {"status": "built", "job": "job2"}])
+            result = iter([{"status": "failed", "job": "job1"},
+                           {"status": "built", "job": "job2", "ready_to_deploy":True,
+                            "delivery":{"image_id":"sha256:qualified"}}])
             with patch("maintainer.discover", return_value=records), \
                  patch("maintainer.admission", return_value={"allowed": True}), \
                  patch("maintainer.run_job", side_effect=lambda *a, **k: next(result)) as run:
