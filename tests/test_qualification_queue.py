@@ -64,6 +64,29 @@ class QualificationQueueTests(unittest.TestCase):
                 self.assertEqual(len(observed),3)
                 docker.return_value.verify.assert_called_once()
 
+    def test_immich_qualification_is_an_isolated_historical_replay(self):
+        """Never try to upgrade the current 3.4.1 fork to itself."""
+        with tempfile.TemporaryDirectory() as temp:
+            with patch("qualification_queue.manifest",return_value={"external_model_endpoint":False}), \
+                 patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \
+                 patch("qualification_queue.locked",side_effect=lambda _:contextlib.nullcontext()), \
+                 patch("qualification_queue.runtime_checks",return_value={"status":"passed"}), \
+                 patch("qualification_queue.smoke",return_value={"status":"ready"}), \
+                 patch("qualification_queue.real_repair",return_value={
+                     "status":"passed","hardware_test_image_id":"sha256:fixture"}), \
+                 patch("qualification_queue.hardware_checks",return_value={"status":"passed"}), \
+                 patch("qualification_queue.qualified_model_memory",return_value=123), \
+                 patch("qualification_queue.run_job",return_value={"status":"built"}) as jobs:
+                result=run_suite({},Path(temp))
+            self.assertEqual(result["status"],"qualified-for-candidate-preparation")
+            upgrades=[call for call in jobs.call_args_list if call.args[0]=="immich"]
+            self.assertEqual(len(upgrades),1)
+            self.assertEqual(upgrades[0].args[3],"3.4.1")
+            self.assertEqual(upgrades[0].kwargs["source_version"],"3.4.0")
+            self.assertEqual(upgrades[0].kwargs["base_ref"],
+                             "3d82c85b3696f384dc39a8a8a13d9df2a563c558")
+            self.assertNotIn("publish_code",upgrades[0].kwargs)
+
     def test_a_failed_revision_is_not_retried_implicitly(self):
         with tempfile.TemporaryDirectory() as temp:
             cases=[("first",lambda:{"status":"failed"},"passed")]
