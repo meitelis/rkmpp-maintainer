@@ -9,9 +9,18 @@ from model_settings import settings
 
 
 def source_digest(directory):
+    """Bind qualification to every controller/build/test input, not just Python."""
+    root = Path(directory)
+    patterns = ("*.py", "*.json", "*.yml", "*.yaml", "Dockerfile",
+                ".dockerignore", ".github/workflows/*.yml", "scripts/*.sh",
+                "tests/*.py")
+    files = {p.relative_to(root).as_posix(): p
+             for pattern in patterns for p in root.glob(pattern)}
     digest = hashlib.sha256()
-    for path in sorted(Path(directory).glob("*.py")):
-        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    for name, path in sorted(files.items()):
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError("Qualification input is not a regular file: " + name)
+        digest.update(name.encode() + b"\0" + path.read_bytes() + b"\0")
     return digest.hexdigest()
 
 
