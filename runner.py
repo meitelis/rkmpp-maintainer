@@ -66,6 +66,21 @@ class Docker:
             if not primary_error:
                 raise RuntimeError("Transient container cleanup/logging failed: " + "; ".join(errors))
 
+    def discard_failed_candidate(self, tag):
+        """Remove only an unsuccessful candidate tag from the isolated builder.
+
+        Never prune caches, delete unrelated images, or touch host Docker.
+        """
+        if not re.fullmatch(r"local/(?:memories|immich)-rkmpp:candidate-\d+\.\d+\.\d+-[a-f0-9]{8}", tag):
+            raise RuntimeError("Refusing to remove non-candidate Docker image: " + tag)
+        self.verify()
+        with cleanup_budget():
+            try:
+                command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
+            except RuntimeError:
+                return  # No image survived the unsuccessful build.
+            command(["docker", "image", "rm", tag], timeout=120)
+
     @contextlib.contextmanager
     def model(self, smoke=False, metrics_path=None):
         if endpoint := os.environ.get("MODEL_ENDPOINT"):
