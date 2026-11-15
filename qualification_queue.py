@@ -34,6 +34,12 @@ def hardware_checks(config, workspace, expected_image_id):
                 raise RuntimeError("Hardware test image changed after the qualified source build")
             cache=job/"cache"
             cache.mkdir()
+            # The pinned go-vod image sets TMPDIR=/cache/tmp. Go testing.T.TempDir
+            # fails before any VPU check if that directory does not exist.
+            # Create it inside this isolated job cache, never in host Docker.
+            temporary=cache/"tmp"
+            temporary.mkdir(mode=0o1777)
+            temporary.chmod(0o1777)
             devices=["/dev/mpp_service","/dev/rga","/dev/dma_heap","/dev/dri","/dev/mali0"]
             for suite,extra in [("ffmpeg","TestSegmentArgsRestartFMP4"),("core","TestFMP4SeekRestart"),("api",None)]:
                 name="rkmpp-maintainer-hardware-"+uuid.uuid4().hex[:12]
