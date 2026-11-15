@@ -280,6 +280,72 @@ def publish_existing(workspace, job_name):
     return result
 
 
+
+def accept_deployed_candidate(workspace, job_name, observed_image_id, source_reviewed=False,
+                              playback_confirmed=False):
+    """Owner-only acceptance; no implicit deployment or success inference."""
+    if not source_reviewed or not playback_confirmed:
+        raise RuntimeError("Requires explicit source review and successful real-client playback confirmation")
+    if not os.environ.get("GITHUB_TOKEN"):
+        raise RuntimeError("Merging requires a scoped GITHUB_TOKEN")
+    job = (workspace / "jobs" / job_name).resolve()
+    if job.parent != (workspace / "jobs").resolve():
+        raise RuntimeError("Job must be inside the maintainer workspace")
+    result = json.loads((job / "result.json").read_text())
+    if (result.get("status") != "built" or result.get("kind") != "release-candidate" or
+            result.get("ready_to_deploy") is not True or
+            result.get("image_id") != observed_image_id or
+            result.get("agent_review", {}).get("review_complete") is not True):
+        raise RuntimeError("Owner's deployed image does not match a complete verified candidate")
+    hardware = result.get("hardware_qualification", {})
+    if (not isinstance(hardware, dict) or hardware.get("ok") is not True or
+            hardware.get("image_id") != observed_image_id):
+        raise RuntimeError("Deployed image ID does not match the RK3588 hardware-qualified image")
+    number, sha, branch = result.get("pull_request_number"), result.get("commit"), result.get("branch")
+    if not isinstance(number, int) or not isinstance(sha, str) or not isinstance(branch, str):
+        raise RuntimeError("Published PR metadata is missing")
+    if not re.fullmatch(r"automation/(?:memories|immich)-\d+\.\d+\.\d+-[a-f0-9]{8}", branch):
+        raise RuntimeError("Refusing to merge or clean up a non-automation branch")
+    repo = PROJECTS[result["project"]]["fork"]
+    api = "repos/" + repo
+    release = json.loads((job / "release.json").read_text())
+    if github(api + "/git/ref/heads/main")["object"]["sha"] != release["fork_base"]:
+        raise RuntimeError("Fork main moved since qualification; prepare a new release candidate")
+    pr = github(api + "/pulls/" + str(number))
+    if (pr.get("state") != "open" or pr.get("draft") or
+            pr.get("head", {}).get("sha") != sha or pr.get("head", {}).get("ref") != branch or
+            pr.get("base", {}).get("ref") != "main" or
+            pr.get("base", {}).get("sha") != release["fork_base"]):
+        raise RuntimeError("PR no longer matches the qualified candidate and source base")
+    checks = github(api + "/commits/" + sha + "/check-runs?per_page=100")
+    runs = checks.get("check_runs", [])
+    if not runs or checks.get("total_count") != len(runs) or any(
+            run.get("status") != "completed" or run.get("conclusion") != "success" for run in runs):
+        raise RuntimeError("GitHub CI checks are missing, incomplete or not all successful")
+    # This API call is possible only after the user explicitly supplies the two
+    # acceptance flags and the observed running image ID.
+    merged = github(api + "/pulls/" + str(number) + "/merge",
+                    {"sha":sha, "merge_method":"squash"}, method="PUT")
+    if merged.get("merged") is not True or not merged.get("sha"):
+        raise RuntimeError("GitHub did not confirm the requested merge")
+    result.update(deployment_approved=True, review_status="owner-accepted-live",
+                  owner_confirmed_image_id=observed_image_id,
+                  merge_commit=merged["sha"],
+                  accepted_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    save_json(job / "result.json", result)
+    try:
+        # Only delete our own branch after GitHub confirms the merge. The
+        # accepted commit and full candidate evidence remain in Git/history.
+        github(api + "/git/refs/heads/" + branch, method="DELETE")
+        result["merged_branch_removed"] = True
+    except Exception as error:
+        result["branch_cleanup_warning"] = str(error)
+    save_json(job / "result.json", result)
+    return {"status":"merged", "project":result["project"], "pull_request":result["pull_request"],
+            "merge_commit":merged["sha"], "image_id":observed_image_id}
+
+
+
 def discover(workspace):
     records = []
     for project, profile in PROJECTS.items():
@@ -452,12 +518,17 @@ def poll_releases(args, config, workspace, profile):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check"])
+    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check", "accept-deployment"])
     parser.add_argument("--repo", choices=PROJECTS)
     parser.add_argument("--target")
     parser.add_argument("--base-ref", default="main")
     parser.add_argument("--source-version")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--job-id", help="Exact maintainer jobs/ directory name")
+    parser.add_argument("--observed-image-id", help="Running production container image ID observed by owner")
+    parser.add_argument("--confirm-source-reviewed", action="store_true")
+    parser.add_argument("--confirm-live-playback", action="store_true")
+
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
@@ -499,6 +570,13 @@ def main():
             time.sleep(max(1, delay))
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
+        if args.action == "accept-deployment":
+            if not args.job_id or not args.observed_image_id:
+                parser.error("accept-deployment requires --job-id and --observed-image-id")
+            print(json.dumps(accept_deployed_candidate(
+                workspace, args.job_id, args.observed_image_id,
+                args.confirm_source_reviewed, args.confirm_live_playback), indent=2))
+            return
         if args.action == "runtime-check":
             result = runtime_checks(config, workspace)
             print(json.dumps(result, indent=2))
