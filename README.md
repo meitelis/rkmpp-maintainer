@@ -125,7 +125,7 @@ New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-
 
 The Git-managed Portainer stack defaults to `MAINTAINER_ACTION=watch` and `AUTO_UPDATE=false`: check releases every six hours without automatically building updates. An explicit `MAINTAINER_ACTION=idle` value saved in Portainer overrides the Git default; change or remove that value in **Edit stack settings** if necessary. Changes in GitHub require **Pull and redeploy** in Portainer unless GitOps polling or a webhook is enabled. After real upgrade tests pass, set `AUTO_UPDATE=true` in Portainer to prepare candidates sequentially for new stable releases.
 
-Successful candidate builds are remembered. Failed builds retain their evidence and are retried after a configurable cooldown (default one hour), up to three attempts per release; exhausted attempts require manual intervention. The watcher releases the job lock between polls, so manual Console jobs can run while it sleeps. Android-only tags, prereleases and drafts are ignored. The monitor does not merge, publish or deploy. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
+Successful candidate builds are remembered. Failed builds retain logs and structured evidence, while failed candidate image tags and transient test containers are removed **only from the isolated builder**, never the host Docker installation. The watcher retries failures after a configurable cooldown (default one hour), with up to three attempts per release; exhausted failures require intervention. The watcher releases the job lock between polls. Android-only tags, prereleases and drafts are ignored. No automatic production deployment or merge occurs. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
 
 ## Update the maintainer
 
@@ -143,7 +143,27 @@ Then update/redeploy the **existing stack in Portainer**, keeping its environmen
 
 Built jobs save `image.tar`, `result.json`, source patches, review evidence and logs. Memories also exports `memories-helper.tar.gz`. A build and a model completion claim do not validate real RKMPP, browser, HDR or audio playback. Candidates need human source review and hardware testing before manual deployment through the existing application stacks in Portainer.
 
-An explicit `run ... --publish` can create a draft PR in the relevant fork when a privately supplied GitHub token has the necessary contents, pull-request and workflow permissions. The token is not passed to model or build subprocesses. The background Portainer stack deliberately receives no token. No registry upload or automatic production deployment is implemented.
+Set both `AUTO_UPDATE=true` and `AUTO_PUBLISH=true` in Portainer **after board validation** to prepare verified releases and create an ordinary PR in the corresponding fork automatically. Publication needs a fine-grained `GITHUB_TOKEN` scoped **only** to `meitelis/memories-rkmpp` and `meitelis/immich-rkmpp` (Contents and Pull Requests write, Contents/Checks read). Without `AUTO_PUBLISH`, watching builds only local candidates. If publishing is enabled without a token, the watcher fails closed *before* expensive work. GitHub credentials go to the maintainer controller environment alone, not the local LLM, Docker builder or repository scripts. Failed reviews or hardware tests never create a PR. A failed GitHub publication is marked `publication-pending` and retried without rebuilding the qualified image.
+
+## Accept a verified deployment and merge its exact PR
+
+After reviewing the candidate PR and importing the matching `image.tar`, change **only** your existing application service in Portainer, test real video startup/seek/quality switching and verify the running image ID on the host:
+
+```sh
+docker inspect memories-rkmpp --format '{{.Image}}'
+# Or: docker inspect immich_server --format '{{.Image}}'
+```
+
+The host reports the running image ID; it must equal `result.json:image_id`. In the maintainer container's Portainer Console, run the following **only after you explicitly accept both source changes and successful live playback**:
+
+```sh
+python3 /opt/maintainer/maintainer.py accept-deployment \
+  --job-id JOB-DIRECTORY-NAME \
+  --observed-image-id sha256:ACTUAL-RUNNING-IMAGE-ID \
+  --confirm-source-reviewed --confirm-live-playback
+```
+
+The controller checks the retained job and hardware evidence, exact PR head SHA, unchanged fork `main`, and all GitHub CI check-runs before requesting a squash merge. It then deletes **only its own merged automation branch**, retaining GitHub PR history and local logs. A stale head, failed CI or mismatched image blocks merging. The controller cannot independently inspect your production app and will never infer playback success from `healthy`. No merge runs without these explicit owner confirmation flags. If CI fails, the branch changed, or live playback regresses, **do not accept**: keep the candidate PR for review and roll back the application in Portainer.
 
 ## Development and CI
 

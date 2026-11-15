@@ -52,6 +52,11 @@ services:
       DOCKER_HOST: tcp://builder:2375
       DOCKER_TLS_CERTDIR: ""
       AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      # Independent opt-in: publish only fully hardware-qualified candidates.
+      AUTO_PUBLISH: ${AUTO_PUBLISH:-false}
+      # A fine-grained token scoped to only the two fork repositories.
+      # Never pass this token to builder/model/verification containers.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
     # The Memories on-board matrix enumerates /dev nodes in the controller.
     # Hardware is exercised only inside the isolated Docker builder.

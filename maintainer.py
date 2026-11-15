@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import difflib
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -97,19 +98,27 @@ def publish(project, root, target, job):
     if not elements:
         raise RuntimeError("No source change to publish")
     api = "repos/" + profile["fork"]
+    # Reject publication against a main branch that moved after qualification.
+    # A silently stale fork would invalidate the tested candidate's source base.
+    if github(api + "/git/ref/heads/main")["object"]["sha"] != base:
+        raise RuntimeError("Fork main advanced after candidate build; reconcile and requalify before publishing")
     base_tree = github(api + "/git/commits/" + base)["tree"]["sha"]
     tree = github(api + "/git/trees", {"base_tree": base_tree, "tree": elements})["sha"]
     commit = github(api + "/git/commits", {"message": f"Prepare {project} {target} RKMPP candidate",
                                           "tree": tree, "parents": [base]})["sha"]
     branch = "automation/" + project + "-" + target + "-" + job.name[-8:]
     github(api + "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit})
-    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": True,
-        "title": f"Candidate: {project} {target} RKMPP update",
-        "body": "Prepared by the local Radxa maintainer. Source checks and the candidate build passed locally. "
-                "This is a draft for review and manual deployment. Hardware playback is not established by compilation. "
-                "The local job contains logs, image.tar, result.json and the matching Memories helper where applicable. "
-                "The controller does not merge or deploy."})
-    return {"branch": branch, "commit": commit, "pull_request": pr["html_url"]}
+    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": False,
+        "title": f"Qualified candidate: {project} {target} RKMPP update",
+        "body": "Prepared by the local Radxa maintainer after source checks, a complete ARM64 build, "
+                "and isolated RK3588 hardware qualification of the exact exported image ID. "
+                "Synthetic hardware tests do not establish real browser/phone playback. "
+                "REVIEW ONLY — do not merge until the owner imports the image, tests production playback "
+                "and explicitly accepts this exact PR/image. Failed attempts never publish PRs. "
+                "The local job retains logs, image.tar, result.json and the matching Memories helper where applicable. "
+                "The controller never deploys production apps."})
+    return {"branch": branch, "commit": commit, "pull_request": pr["html_url"],
+            "pull_request_number": pr["number"], "publication_status": "published"}
 
 
 def review_targets(project, root, changes):
@@ -190,6 +199,12 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     errors = str(error)
                     result.setdefault("repair_failures", []).append({
                         "attempt": attempt + 1, "error": errors[-12000:]})
+                    # A failed build/qualification never leaves its image tagged
+                    # as a deployable candidate in our isolated builder.
+                    try:
+                        docker.discard_failed_candidate(tag)
+                    except Exception as cleanup_error:
+                        result.setdefault("cleanup_warnings", []).append(str(cleanup_error))
                     save_json(job / "result.json", result)
                     if attempt + 1 == rounds:
                         raise RuntimeError(f"Candidate failed after {rounds} check/build/hardware attempts: {errors}") from error
@@ -207,24 +222,144 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             result["artifact_status"] = "ready-to-deploy" if reviewed else "requires-source-review"
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
+            result["candidate_diff_sha256"] = hashlib.sha256((job / "candidate.diff").read_bytes()).hexdigest()
             if project == "memories":
                 with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
                     archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
             save_json(job / "result.json", result)
             if publish_code:
-                # Publication failure does not discard a successfully built local image.
+                # Publication is strictly downstream of independent hardware and
+                # a complete model review; never publish debug/historical jobs.
+                if not reviewed or result["kind"] != "release-candidate":
+                    raise RuntimeError("Publishing requires a reviewed, hardware-qualified release candidate")
                 try:
                     result.update(publish(project, root, target, job))
                 except Exception as error:
                     result["publication_error"] = str(error)
+                    result["publication_status"] = "retryable"
+                    result["status"] = "publication-pending"
         return result
     except Exception as error:
         result.update(status="failed", error=str(error), ready_to_deploy=False, artifact_status="blocked")
         (job / "error.txt").write_text(traceback.format_exc())
+        # Also cover failures outside the inner check/build retry loop (model
+        # refusal, export mismatch, an unexpected exception). Only our own
+        # candidate tag on the verified isolated daemon may be discarded.
+        if "docker" in locals() and "tag" in locals():
+            try:
+                docker.discard_failed_candidate(tag)
+            except Exception as cleanup_error:
+                result.setdefault("cleanup_warnings", []).append(str(cleanup_error))
         return result
     finally:
         result["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         save_json(job / "result.json", result)
+
+
+
+def publish_existing(workspace, job_name):
+    """Retry only GitHub publication, never a successful hardware build."""
+    job = (workspace / "jobs" / job_name).resolve()
+    if job.parent != (workspace / "jobs").resolve():
+        raise RuntimeError("Publication job must be inside the maintainer workspace")
+    result = json.loads((job / "result.json").read_text())
+    if result.get("status") != "publication-pending" or not result.get("ready_to_deploy"):
+        raise RuntimeError("Only verified candidates with pending publication can be retried")
+    hardware = result.get("hardware_qualification", {})
+    if (not isinstance(hardware, dict) or hardware.get("ok") is not True or
+            hardware.get("image_id") != result.get("image_id") or
+            result.get("agent_review", {}).get("review_complete") is not True or
+            result.get("kind") != "release-candidate"):
+        raise RuntimeError("Candidate failed the independent hardware/source publication gate")
+    patch = job / "candidate.diff"
+    saved_patch = patch.read_bytes() if patch.is_file() else b""
+    fresh_patch = (git(job / "source", "diff", "HEAD") + "\n").encode()
+    if (not saved_patch or saved_patch != fresh_patch or
+            hashlib.sha256(saved_patch).hexdigest() != result.get("candidate_diff_sha256")):
+        raise RuntimeError("Candidate source changed since hardware qualification")
+    archive = job / "image.tar"
+    checksum = job / "image.tar.sha256"
+    if not archive.is_file() or not checksum.is_file():
+        raise RuntimeError("Validated candidate archive or checksum is missing")
+    with archive.open("rb") as image:
+        if hashlib.file_digest(image, "sha256").hexdigest() != checksum.read_text().split()[0]:
+            raise RuntimeError("Candidate archive checksum no longer matches the validated export")
+    docker = Docker(json.loads((HERE / "config.json").read_text()), workspace)
+    docker.verify()
+    image_id = command(["docker", "image", "inspect", result["image"], "--format", "{{.Id}}"], timeout=30)
+    if image_id != result["image_id"]:
+        raise RuntimeError("Candidate image ID changed since hardware qualification")
+    result.update(publish(result["project"], job / "source", result["target"], job))
+    result["status"] = "built"
+    result.pop("publication_error", None)
+    save_json(job / "result.json", result)
+    return result
+
+
+
+def accept_deployed_candidate(workspace, job_name, observed_image_id, source_reviewed=False,
+                              playback_confirmed=False):
+    """Owner-only acceptance; no implicit deployment or success inference."""
+    if not source_reviewed or not playback_confirmed:
+        raise RuntimeError("Requires explicit source review and successful real-client playback confirmation")
+    if not os.environ.get("GITHUB_TOKEN"):
+        raise RuntimeError("Merging requires a scoped GITHUB_TOKEN")
+    job = (workspace / "jobs" / job_name).resolve()
+    if job.parent != (workspace / "jobs").resolve():
+        raise RuntimeError("Job must be inside the maintainer workspace")
+    result = json.loads((job / "result.json").read_text())
+    if (result.get("status") != "built" or result.get("kind") != "release-candidate" or
+            result.get("ready_to_deploy") is not True or
+            result.get("image_id") != observed_image_id or
+            result.get("agent_review", {}).get("review_complete") is not True):
+        raise RuntimeError("Owner's deployed image does not match a complete verified candidate")
+    hardware = result.get("hardware_qualification", {})
+    if (not isinstance(hardware, dict) or hardware.get("ok") is not True or
+            hardware.get("image_id") != observed_image_id):
+        raise RuntimeError("Deployed image ID does not match the RK3588 hardware-qualified image")
+    number, sha, branch = result.get("pull_request_number"), result.get("commit"), result.get("branch")
+    if not isinstance(number, int) or not isinstance(sha, str) or not isinstance(branch, str):
+        raise RuntimeError("Published PR metadata is missing")
+    if not re.fullmatch(r"automation/(?:memories|immich)-\d+\.\d+\.\d+-[a-f0-9]{8}", branch):
+        raise RuntimeError("Refusing to merge or clean up a non-automation branch")
+    repo = PROJECTS[result["project"]]["fork"]
+    api = "repos/" + repo
+    release = json.loads((job / "release.json").read_text())
+    if github(api + "/git/ref/heads/main")["object"]["sha"] != release["fork_base"]:
+        raise RuntimeError("Fork main moved since qualification; prepare a new release candidate")
+    pr = github(api + "/pulls/" + str(number))
+    if (pr.get("state") != "open" or pr.get("draft") or
+            pr.get("head", {}).get("sha") != sha or pr.get("head", {}).get("ref") != branch or
+            pr.get("base", {}).get("ref") != "main" or
+            pr.get("base", {}).get("sha") != release["fork_base"]):
+        raise RuntimeError("PR no longer matches the qualified candidate and source base")
+    checks = github(api + "/commits/" + sha + "/check-runs?per_page=100")
+    runs = checks.get("check_runs", [])
+    if not runs or checks.get("total_count") != len(runs) or any(
+            run.get("status") != "completed" or run.get("conclusion") != "success" for run in runs):
+        raise RuntimeError("GitHub CI checks are missing, incomplete or not all successful")
+    # This API call is possible only after the user explicitly supplies the two
+    # acceptance flags and the observed running image ID.
+    merged = github(api + "/pulls/" + str(number) + "/merge",
+                    {"sha":sha, "merge_method":"squash"}, method="PUT")
+    if merged.get("merged") is not True or not merged.get("sha"):
+        raise RuntimeError("GitHub did not confirm the requested merge")
+    result.update(deployment_approved=True, review_status="owner-accepted-live",
+                  owner_confirmed_image_id=observed_image_id,
+                  merge_commit=merged["sha"],
+                  accepted_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    save_json(job / "result.json", result)
+    try:
+        # Only delete our own branch after GitHub confirms the merge. The
+        # accepted commit and full candidate evidence remain in Git/history.
+        github(api + "/git/refs/heads/" + branch, method="DELETE")
+        result["merged_branch_removed"] = True
+    except Exception as error:
+        result["branch_cleanup_warning"] = str(error)
+    save_json(job / "result.json", result)
+    return {"status":"merged", "project":result["project"], "pull_request":result["pull_request"],
+            "merge_commit":merged["sha"], "image_id":observed_image_id}
+
 
 
 def discover(workspace):
@@ -328,6 +463,10 @@ def poll_releases(args, config, workspace, profile):
     if args.action not in {"once", "watch"} or (
             args.action == "watch" and os.environ.get("AUTO_UPDATE") != "true"):
         return delay, failed, deferred
+    auto_publish = args.publish or (args.action == "watch" and os.environ.get("AUTO_PUBLISH") == "true")
+    if auto_publish and not os.environ.get("GITHUB_TOKEN"):
+        print(json.dumps({"status":"blocked", "reason":"AUTO_PUBLISH requires a scoped GITHUB_TOKEN; no build started"}), flush=True)
+        return delay, True, False
 
     state_path = workspace / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
@@ -353,6 +492,27 @@ def poll_releases(args, config, workspace, profile):
                                   "version": record["latest"], "attempts": attempts}), flush=True)
             continue
 
+        if state.get(key, {}).get("status") == "publication-pending":
+            if not auto_publish:
+                deferred = True
+                print(json.dumps({"status":"publication-pending", "project":record["project"],
+                                  "version":record["latest"], "job":state[key]["job"]}), flush=True)
+                continue
+            try:
+                published = publish_existing(workspace, Path(state[key]["job"]).name)
+                state[key] = {"status":"built", "job":published["job"],
+                              "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
+                save_json(state_path, state)
+                print(json.dumps({"status":"published", "project":record["project"],
+                                  "pull_request":published["pull_request"]}), flush=True)
+            except Exception as error:
+                state[key]["attempts"] = attempts + 1
+                state[key]["last_attempt_at"] = now.isoformat()
+                save_json(state_path, state)
+                print(json.dumps({"status":"publication-retry-failed", "error":str(error)}), flush=True)
+                failed = True
+            continue
+
         gate = admission(config, profile) if args.action == "watch" or not args.ignore_window else {"allowed": True}
         if not gate["allowed"]:
             deferred = True
@@ -361,7 +521,7 @@ def poll_releases(args, config, workspace, profile):
             continue
 
         result = run_job(record["project"], config, workspace, record["latest"],
-                         publish_code=args.publish, no_agent=args.no_agent, model_profile=profile)
+                         publish_code=auto_publish, no_agent=args.no_agent, model_profile=profile)
         state[key] = {"status": result["status"], "job": result["job"],
                       "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
         save_json(state_path, state)
@@ -374,12 +534,17 @@ def poll_releases(args, config, workspace, profile):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check"])
+    parser.add_argument("action", choices=["idle", "check", "once", "watch", "prepare", "run", "smoke", "runtime-check", "accept-deployment"])
     parser.add_argument("--repo", choices=PROJECTS)
     parser.add_argument("--target")
     parser.add_argument("--base-ref", default="main")
     parser.add_argument("--source-version")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--job-id", help="Exact maintainer jobs/ directory name")
+    parser.add_argument("--observed-image-id", help="Running production container image ID observed by owner")
+    parser.add_argument("--confirm-source-reviewed", action="store_true")
+    parser.add_argument("--confirm-live-playback", action="store_true")
+
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
@@ -421,6 +586,13 @@ def main():
             time.sleep(max(1, delay))
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
+        if args.action == "accept-deployment":
+            if not args.job_id or not args.observed_image_id:
+                parser.error("accept-deployment requires --job-id and --observed-image-id")
+            print(json.dumps(accept_deployed_candidate(
+                workspace, args.job_id, args.observed_image_id,
+                args.confirm_source_reviewed, args.confirm_live_playback), indent=2))
+            return
         if args.action == "runtime-check":
             result = runtime_checks(config, workspace)
             print(json.dumps(result, indent=2))
