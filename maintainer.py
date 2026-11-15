@@ -248,6 +248,38 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
         save_json(job / "result.json", result)
 
 
+
+def publish_existing(workspace, job_name):
+    """Retry only GitHub publication, never a successful hardware build."""
+    job = (workspace / "jobs" / job_name).resolve()
+    if job.parent != (workspace / "jobs").resolve():
+        raise RuntimeError("Publication job must be inside the maintainer workspace")
+    result = json.loads((job / "result.json").read_text())
+    if result.get("status") != "publication-pending" or not result.get("ready_to_deploy"):
+        raise RuntimeError("Only verified candidates with pending publication can be retried")
+    hardware = result.get("hardware_qualification", {})
+    if (not isinstance(hardware, dict) or hardware.get("ok") is not True or
+            hardware.get("image_id") != result.get("image_id") or
+            result.get("agent_review", {}).get("review_complete") is not True or
+            result.get("kind") != "release-candidate"):
+        raise RuntimeError("Candidate failed the independent hardware/source publication gate")
+    patch = job / "candidate.diff"
+    if not patch.is_file() or hashlib.sha256(patch.read_bytes()).hexdigest() != result.get("candidate_diff_sha256"):
+        raise RuntimeError("Candidate diff evidence changed since qualification")
+    if not (job / "image.tar").is_file():
+        raise RuntimeError("Validated candidate archive is missing")
+    docker = Docker(json.loads((HERE / "config.json").read_text()), workspace)
+    docker.verify()
+    image_id = command(["docker", "image", "inspect", result["image"], "--format", "{{.Id}}"], timeout=30)
+    if image_id != result["image_id"]:
+        raise RuntimeError("Candidate image ID changed since hardware qualification")
+    result.update(publish(result["project"], job / "source", result["target"], job))
+    result["status"] = "built"
+    result.pop("publication_error", None)
+    save_json(job / "result.json", result)
+    return result
+
+
 def discover(workspace):
     records = []
     for project, profile in PROJECTS.items():
@@ -349,6 +381,10 @@ def poll_releases(args, config, workspace, profile):
     if args.action not in {"once", "watch"} or (
             args.action == "watch" and os.environ.get("AUTO_UPDATE") != "true"):
         return delay, failed, deferred
+    auto_publish = args.publish or (args.action == "watch" and os.environ.get("AUTO_PUBLISH") == "true")
+    if auto_publish and not os.environ.get("GITHUB_TOKEN"):
+        print(json.dumps({"status":"blocked", "reason":"AUTO_PUBLISH requires a scoped GITHUB_TOKEN; no build started"}), flush=True)
+        return delay, True, False
 
     state_path = workspace / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
@@ -374,6 +410,27 @@ def poll_releases(args, config, workspace, profile):
                                   "version": record["latest"], "attempts": attempts}), flush=True)
             continue
 
+        if state.get(key, {}).get("status") == "publication-pending":
+            if not auto_publish:
+                deferred = True
+                print(json.dumps({"status":"publication-pending", "project":record["project"],
+                                  "version":record["latest"], "job":state[key]["job"]}), flush=True)
+                continue
+            try:
+                published = publish_existing(workspace, Path(state[key]["job"]).name)
+                state[key] = {"status":"built", "job":published["job"],
+                              "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
+                save_json(state_path, state)
+                print(json.dumps({"status":"published", "project":record["project"],
+                                  "pull_request":published["pull_request"]}), flush=True)
+            except Exception as error:
+                state[key]["attempts"] = attempts + 1
+                state[key]["last_attempt_at"] = now.isoformat()
+                save_json(state_path, state)
+                print(json.dumps({"status":"publication-retry-failed", "error":str(error)}), flush=True)
+                failed = True
+            continue
+
         gate = admission(config, profile) if args.action == "watch" or not args.ignore_window else {"allowed": True}
         if not gate["allowed"]:
             deferred = True
@@ -382,7 +439,7 @@ def poll_releases(args, config, workspace, profile):
             continue
 
         result = run_job(record["project"], config, workspace, record["latest"],
-                         publish_code=args.publish, no_agent=args.no_agent, model_profile=profile)
+                         publish_code=auto_publish, no_agent=args.no_agent, model_profile=profile)
         state[key] = {"status": result["status"], "job": result["job"],
                       "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
         save_json(state_path, state)
