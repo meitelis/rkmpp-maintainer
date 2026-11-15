@@ -34,7 +34,8 @@ class ReleaseFlowTests(unittest.TestCase):
             with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"true","GITHUB_TOKEN":"scoped"},clear=True), \
                  patch("maintainer.discover",return_value=record), \
                  patch("maintainer.admission",return_value={"allowed":True}), \
-                 patch("maintainer.run_job",return_value={"status":"built","job":"qualified"}) as job:
+                 patch("maintainer.run_job",return_value={"status":"built","job":"qualified",
+                     "ready_to_deploy":True,"delivery":{"image_id":"sha256:qualified"}}) as job:
                 maintainer.poll_releases(args,{"poll_seconds":3600},Path(temp),"coding")
             self.assertTrue(job.call_args.kwargs["publish_code"])
 
