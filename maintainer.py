@@ -25,6 +25,7 @@ from qualification import runtime_checks
 from model_settings import settings
 from schedule import admission, wait_for_window
 from delivery import verify_release_image
+from lessons import verified_lessons, record_verified_repair
 
 HERE = Path(__file__).resolve().parent
 
@@ -160,6 +161,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             task += "\nMerge notes: " + "\n".join(notes)
             task += "\nRead upstream files/diffs to verify player and protocol compatibility. "
             task += "Build commands, workflows and tests are protected. Report blockers instead of bypassing them."
+            task += verified_lessons(workspace, project)
             errors = ""
             tag = "local/" + project + "-rkmpp:candidate-" + target + "-" + job.name[-8:]
             rounds = 1 if no_agent else config["repair_rounds"]
@@ -232,6 +234,15 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 result["delivery"] = verify_release_image(job, result)
             result["status"] = "built"
             save_json(job / "result.json", result)
+            if deliverable and result.get("repair_failures"):
+                # Lessons are optional optimisation, not another success gate:
+                # only independently verified releases teach the next update.
+                try:
+                    paths = git(root, "diff", "--name-only", "HEAD").splitlines()
+                    result["verified_repair_recorded"] = record_verified_repair(
+                        workspace, project, target, result, paths)
+                except (OSError, ValueError, RuntimeError) as error:
+                    result["verified_repair_warning"] = str(error)[:400]
             if publish_code:
                 # Publication is strictly downstream of independent hardware and
                 # a complete model review; never publish debug/historical jobs.
