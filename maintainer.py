@@ -247,6 +247,10 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
     except Exception as error:
         result.update(status="failed", error=str(error), ready_to_deploy=False, artifact_status="blocked")
         (job / "error.txt").write_text(traceback.format_exc())
+        # A failed attempt may leave an incomplete archive. Retain diagnostic
+        # logs and source evidence, but never leave an installable-looking tar.
+        for artifact in ("image.tar", "image.tar.sha256", "memories-helper.tar.gz"):
+            (job / artifact).unlink(missing_ok=True)
         # Also cover failures outside the inner check/build retry loop (model
         # refusal, export mismatch, an unexpected exception). Only our own
         # candidate tag on the verified isolated daemon may be discarded.
