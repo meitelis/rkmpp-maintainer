@@ -14,6 +14,47 @@ import maintainer
 
 
 class WatcherTests(unittest.TestCase):
+    def test_current_releases_produce_no_images_or_jobs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace=Path(temp)
+            args=SimpleNamespace(action="watch",ignore_window=False,publish=False,no_agent=False)
+            releases=[{"project":"memories","current":"11.1.4","latest":"11.1.4","update":False},
+                      {"project":"immich","current":"3.4.1","latest":"3.4.1","update":False}]
+            with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"false"},clear=True), \
+                 patch("maintainer.discover",return_value=releases), \
+                 patch("maintainer.run_job") as jobs, \
+                 patch("maintainer.admission") as admission:
+                delay,failed,deferred=maintainer.poll_releases(
+                    args,{"poll_seconds":21600},workspace,"coding")
+            self.assertEqual((delay,failed,deferred),(21600,False,False))
+            jobs.assert_not_called()
+            admission.assert_not_called()
+            self.assertFalse((workspace/"jobs").exists())
+            self.assertFalse((workspace/"state.json").exists())
+
+    def test_new_release_builds_only_its_changed_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace=Path(temp)
+            args=SimpleNamespace(action="watch",ignore_window=False,publish=False,no_agent=False)
+            releases=[{"project":"memories","latest":"11.1.5","update":True},
+                      {"project":"immich","latest":"3.4.1","update":False}]
+            good_job=workspace/"jobs"/"memories-11.1.5-aabbccdd"
+            good_job.mkdir(parents=True)
+            response={"status":"built","job":str(good_job),"ready_to_deploy":True,
+                      "delivery":{"image_id":"sha256:qualified"}}
+            with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"false"},clear=True), \
+                 patch("maintainer.discover",return_value=releases), \
+                 patch("maintainer.admission",return_value={"allowed":True}), \
+                 patch("maintainer.run_job",return_value=response) as jobs:
+                _,failed,_=maintainer.poll_releases(args,{},workspace,"coding")
+            self.assertFalse(failed)
+            jobs.assert_called_once()
+            self.assertEqual(jobs.call_args.args[0],"memories")
+            self.assertEqual(jobs.call_args.args[3],"11.1.5")
+            state=json.loads((workspace/"state.json").read_text())
+            self.assertIn("memories:11.1.5",state)
+            self.assertNotIn("immich:3.4.1",state)
+
     def test_failed_candidate_retries_but_completed_candidate_does_not(self):
         now = datetime.datetime(2026, 11, 14, 0, 0, tzinfo=datetime.timezone.utc)
         failed = {"status": "failed", "attempts": 1, "last_attempt_at": now.isoformat()}
