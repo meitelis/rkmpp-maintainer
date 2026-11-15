@@ -288,4 +288,11 @@ class Docker:
         size = int(command(["docker", "image", "inspect", tag, "--format", "{{.Size}}"], timeout=30))
         require_space(self.workspace, int(size * 1.2))
         command(["docker", "save", "-o", str(destination), tag], timeout=1800)
+        archive = Path(destination)
+        if not archive.is_file() or archive.stat().st_size <= 0:
+            raise RuntimeError("Docker export archive missing or empty")
+        with archive.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        archive.with_suffix(archive.suffix + ".sha256").write_text(
+            digest + "  " + archive.name + "\n")
         return command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
