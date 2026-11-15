@@ -112,22 +112,29 @@ def download_model(spec, destination):
     if destination.exists() and digest(destination) == spec["sha256"]:
         return destination
     temporary = destination.with_suffix(".part")
-    # Existing invalid copies are preserved until a fully verified replacement exists.
+    # Never let an abandoned partial download consume the reserve needed by
+    # the next attempt. Leave an existing good model untouched.
+    temporary.unlink(missing_ok=True)
     require_space(destination.parent, spec["bytes"])
     check_budget()
     req = urllib.request.Request(spec["url"], headers={"User-Agent": "rkmpp-maintainer"})
-    with urllib.request.urlopen(req, timeout=bounded_timeout(120)) as response, temporary.open("wb") as target:
-        size = 0
-        while block := response.read(1024 * 1024):
-            check_budget()
-            size += len(block)
-            if size > spec["bytes"]:
-                raise RuntimeError("Model download exceeds its pinned size")
-            target.write(block)
-    if size != spec["bytes"] or digest(temporary) != spec["sha256"]:
+    try:
+        with urllib.request.urlopen(req, timeout=bounded_timeout(120)) as response, temporary.open("wb") as target:
+            size = 0
+            while block := response.read(1024 * 1024):
+                check_budget()
+                size += len(block)
+                if size > spec["bytes"]:
+                    raise RuntimeError("Model download exceeds its pinned size")
+                target.write(block)
+        if size != spec["bytes"] or digest(temporary) != spec["sha256"]:
+            raise RuntimeError("Model checksum mismatch")
+        temporary.replace(destination)
+    except BaseException:
+        # Handles interrupted reads, budget expiry, bad checksums and signal
+        # cancellation; no faulty artifact can be reused as a verified model.
         temporary.unlink(missing_ok=True)
-        raise RuntimeError("Model checksum mismatch")
-    temporary.replace(destination)
+        raise
     return destination
 
 
