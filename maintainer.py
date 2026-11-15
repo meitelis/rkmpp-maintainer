@@ -24,6 +24,7 @@ from evidence import record_runtime, save_manifest
 from qualification import runtime_checks
 from model_settings import settings
 from schedule import admission, wait_for_window
+from delivery import verify_release_image
 
 HERE = Path(__file__).resolve().parent
 
@@ -211,21 +212,25 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             if hardware is None:
                 raise RuntimeError("Missing successful RK3588 hardware qualification")
             phase(job, result, "export")
-            result.update(status="built", image=tag,
-                          image_id=docker.export(tag, job / "image.tar"))
+            result.update(image=tag, image_id=docker.export(tag, job / "image.tar"))
             if result["image_id"] != hardware["image_id"]:
                 raise RuntimeError("Exported image differs from hardware-qualified candidate")
-            # A verified export can be installed manually; it never authorizes
-            # the maintainer to modify running applications or their databases.
             reviewed = not no_agent and result["agent_review"].get("review_complete") is True
-            result["ready_to_deploy"] = bool(reviewed)
-            result["artifact_status"] = "ready-to-deploy" if reviewed else "requires-source-review"
+            deliverable = reviewed and result["kind"] == "release-candidate"
+            result["ready_to_deploy"] = bool(deliverable)
+            result["artifact_status"] = ("ready-to-deploy" if deliverable else
+                "historical-replay" if result["kind"] != "release-candidate" else "requires-source-review")
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
             result["candidate_diff_sha256"] = hashlib.sha256((job / "candidate.diff").read_bytes()).hexdigest()
             if project == "memories":
                 with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
                     archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
+            # Do not advertise a release until its saved image is complete,
+            # matches the hardware-tested ID, and can be loaded by Docker.
+            if deliverable:
+                result["delivery"] = verify_release_image(job, result)
+            result["status"] = "built"
             save_json(job / "result.json", result)
             if publish_code:
                 # Publication is strictly downstream of independent hardware and
@@ -522,6 +527,14 @@ def poll_releases(args, config, workspace, profile):
 
         result = run_job(record["project"], config, workspace, record["latest"],
                          publish_code=auto_publish, no_agent=args.no_agent, model_profile=profile)
+        # A built debug job without a verified archive is not a release.
+        if result["status"] == "built" and (
+                result.get("ready_to_deploy") is not True or
+                not isinstance(result.get("delivery"), dict)):
+            result.update(status="failed", ready_to_deploy=False,
+                          artifact_status="blocked",
+                          error="No verified, importable image.tar was produced")
+            save_json(Path(result["job"]) / "result.json", result)
         state[key] = {"status": result["status"], "job": result["job"],
                       "attempts": attempts + 1, "last_attempt_at": now.isoformat()}
         save_json(state_path, state)
