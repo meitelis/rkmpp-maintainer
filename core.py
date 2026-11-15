@@ -38,7 +38,9 @@ def http_json(url, data=None, token=None, method=None):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, encoded, headers, method=method)
     with urllib.request.urlopen(req, timeout=bounded_timeout(60)) as response:
-        return json.load(response)
+        data = response.read()
+        # GitHub returns HTTP 204 (empty body) when deleting a merged branch.
+        return json.loads(data) if data else {}
 
 
 def clean_env(extra=None):
