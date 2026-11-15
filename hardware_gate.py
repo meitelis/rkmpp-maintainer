@@ -38,7 +38,7 @@ def validate_immich_report(scratch, expected_label=None):
     if report.is_symlink() or not report.is_file():
         raise RuntimeError("Hardware report must be a regular file")
     data = json.loads(report.read_text())
-    if data.get("schemaVersion") != 1 or data.get("quick") is not True:
+    if data.get("schemaVersion") != 1 or data.get("quick") is not False:
         raise RuntimeError("Unexpected RKMPP hardware report schema or test mode")
     if expected_label is not None and data.get("label") != expected_label:
         raise RuntimeError("RKMPP hardware report label mismatch")
