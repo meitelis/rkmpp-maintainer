@@ -33,9 +33,14 @@ class QueueHardeningTests(unittest.TestCase):
     def test_busy_lock_retries_and_then_allows_real_failure_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             attempts=iter([RuntimeError("Another maintainer job is running"),contextlib.nullcontext()])
+            def acquire(_):
+                next_lock=next(attempts)
+                if isinstance(next_lock,RuntimeError):
+                    raise next_lock
+                return next_lock
             do_work=Mock(return_value={"status":"failed","error":"real codec failure"})
             with patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \
-                 patch("qualification_queue.locked",side_effect=lambda _:next(attempts)), \
+                 patch("qualification_queue.locked",side_effect=acquire), \
                  patch("qualification_queue.time.sleep") as sleep:
                 result=run_suite({},Path(temp),cases=[("actual",do_work,"passed")])
             self.assertEqual(result["status"],"failed")
