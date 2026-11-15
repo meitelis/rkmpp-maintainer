@@ -124,7 +124,8 @@ class JobTests(unittest.TestCase):
                 docker.hardware.side_effect = lambda *args: (events.append('hardware') or
                     {'ok': True, 'image_id': 'sha256:fixture'})
                 docker.export.return_value = 'sha256:fixture'
-                result = maintainer.run_job('immich', {'repair_rounds': 2, 'agent_turns': 4}, Path(temp), '3.4.1')
+                with patch('maintainer.verify_release_image', return_value={'sha256':'qualified'}):
+                    result = maintainer.run_job('immich', {'repair_rounds': 2, 'agent_turns': 4}, Path(temp), '3.4.1')
                 self.assertEqual(result['status'], 'built')
                 self.assertEqual(result['review_status'], 'pending-human-review')
                 self.assertFalse(result['deployment_approved'])
@@ -216,8 +217,9 @@ class JobTests(unittest.TestCase):
                     return {'ok': True, 'image_id': 'sha256:fixed'}
                 docker.hardware.side_effect = hardware
                 docker.export.return_value = 'sha256:fixed'
-                result = maintainer.run_job('immich', {'repair_rounds':3, 'agent_turns':6},
-                    workspace, '3.4.1')
+                with patch('maintainer.verify_release_image', return_value={'sha256':'qualified'}):
+                    result = maintainer.run_job('immich', {'repair_rounds':3, 'agent_turns':6},
+                        workspace, '3.4.1')
                 self.assertEqual(result['status'], 'built')
                 self.assertTrue(result['ready_to_deploy'])
                 self.assertEqual(result['repair_attempts'], 2)
