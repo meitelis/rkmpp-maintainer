@@ -242,7 +242,7 @@ class Docker:
                          "-v", str(root / "scripts/verify-hardware.mjs") + ":/opt/verify-hardware.mjs:ro",
                          "-v", str(scratch) + ":/scratch", "--entrypoint", "node", tag,
                          "/opt/verify-hardware.mjs", "--scratch", "/scratch",
-                         "--quick", "--hdr", "--sdr10", "--small", "--audio",
+                         "--hdr", "--sdr10", "--small", "--audio",
                          "--fallback", "--rotation", "--memories", "--label", label],
                         timeout=3600, log=log)
             finally:
