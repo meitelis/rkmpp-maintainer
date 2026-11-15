@@ -121,13 +121,16 @@ class JobTests(unittest.TestCase):
                 docker.model.side_effect = model
                 docker.checks.side_effect = lambda *args: events.append('checks')
                 docker.build.side_effect = lambda *args: events.append('build')
+                docker.hardware.side_effect = lambda *args: (events.append('hardware') or
+                    {'ok': True, 'image_id': 'sha256:fixture'})
                 docker.export.return_value = 'sha256:fixture'
                 result = maintainer.run_job('immich', {'repair_rounds': 2, 'agent_turns': 4}, Path(temp), '3.4.1')
                 self.assertEqual(result['status'], 'built')
                 self.assertEqual(result['review_status'], 'pending-human-review')
                 self.assertFalse(result['deployment_approved'])
                 self.assertTrue((Path(result['job'])/'agent-review.json').exists())
-                self.assertEqual(events, ['model-loaded','model-unloaded','checks','build'])
+                self.assertEqual(events, ['model-loaded','model-unloaded','checks','build','hardware'])
+                self.assertTrue(result['ready_to_deploy'])
 
     def test_historical_build_without_agent_is_not_approval(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,6 +141,7 @@ class JobTests(unittest.TestCase):
             with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='patch'), patch('maintainer.Docker') as cls:
                 cls.return_value.export.return_value = 'sha256:fixture'
+                cls.return_value.hardware.return_value = {'ok': True, 'image_id': 'sha256:fixture'}
                 result = maintainer.run_job('memories', {}, Path(temp), '11.1.2',
                     base_ref='old-commit', source_version='11.1.1', no_agent=True)
                 self.assertEqual(result['status'], 'built')
@@ -146,6 +150,41 @@ class JobTests(unittest.TestCase):
                 self.assertFalse(result['deployment_approved'])
                 self.assertFalse(result['agent_review']['review_complete'])
                 self.assertEqual(result['agent_review']['assessment'], 'skipped')
+                self.assertFalse(result['ready_to_deploy'])
+
+
+    def test_hardware_failure_blocks_export_and_ready_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+                 patch('maintainer.git', return_value='diff'), patch('maintainer.Docker') as cls:
+                docker = cls.return_value
+                docker.hardware.side_effect = RuntimeError('VPU hardware matrix failed')
+                result = maintainer.run_job('immich', {}, Path(temp), '3.4.1', no_agent=True)
+                self.assertEqual(result['status'], 'failed')
+                self.assertFalse(result['ready_to_deploy'])
+                self.assertEqual(result['artifact_status'], 'blocked')
+                self.assertIn('VPU hardware matrix failed', result['error'])
+                docker.export.assert_not_called()
+
+    def test_changed_image_identity_blocks_ready_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+                 patch('maintainer.git', return_value='diff'), patch('maintainer.Docker') as cls:
+                docker = cls.return_value
+                docker.hardware.return_value = {'ok': True, 'image_id': 'sha256:tested'}
+                docker.export.return_value = 'sha256:changed'
+                result = maintainer.run_job('memories', {}, Path(temp), '11.1.5', no_agent=True)
+                self.assertEqual(result['status'], 'failed')
+                self.assertFalse(result['ready_to_deploy'])
+                self.assertIn('differs', result['error'])
 
     def test_run_cli_accepts_built_as_a_successful_build(self):
         with tempfile.TemporaryDirectory() as temp:
