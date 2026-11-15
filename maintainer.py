@@ -264,10 +264,18 @@ def publish_existing(workspace, job_name):
             result.get("kind") != "release-candidate"):
         raise RuntimeError("Candidate failed the independent hardware/source publication gate")
     patch = job / "candidate.diff"
-    if not patch.is_file() or hashlib.sha256(patch.read_bytes()).hexdigest() != result.get("candidate_diff_sha256"):
-        raise RuntimeError("Candidate diff evidence changed since qualification")
-    if not (job / "image.tar").is_file():
-        raise RuntimeError("Validated candidate archive is missing")
+    saved_patch = patch.read_bytes() if patch.is_file() else b""
+    fresh_patch = (git(job / "source", "diff", "HEAD") + "\n").encode()
+    if (not saved_patch or saved_patch != fresh_patch or
+            hashlib.sha256(saved_patch).hexdigest() != result.get("candidate_diff_sha256")):
+        raise RuntimeError("Candidate source changed since hardware qualification")
+    archive = job / "image.tar"
+    checksum = job / "image.tar.sha256"
+    if not archive.is_file() or not checksum.is_file():
+        raise RuntimeError("Validated candidate archive or checksum is missing")
+    with archive.open("rb") as image:
+        if hashlib.file_digest(image, "sha256").hexdigest() != checksum.read_text().split()[0]:
+            raise RuntimeError("Candidate archive checksum no longer matches the validated export")
     docker = Docker(json.loads((HERE / "config.json").read_text()), workspace)
     docker.verify()
     image_id = command(["docker", "image", "inspect", result["image"], "--format", "{{.Id}}"], timeout=30)
