@@ -63,7 +63,12 @@ docker image inspect IMAGE-TAG --format '{{.Id}} {{.Architecture}}'
 
 Only the owner updates the existing Portainer app stack. Preserve the current
 image and database backup. Switching an image back does not necessarily undo
-Immich database migrations. A validated synthetic/hardware matrix is not a
+Immich database migrations. After source review and successful live playback,
+run `maintainer.py accept-deployment --job-id JOB-DIRECTORY-NAME
+--observed-image-id sha256:... --confirm-source-reviewed --confirm-live-playback`
+inside the maintainer's Portainer Console. This verifies the exact image,
+PR SHA, unchanged main and green CI before merging. No deployment or merge is
+triggered by a successful synthetic hardware test alone. A validated synthetic/hardware matrix is not a
 claim of universal smooth playback or guaranteed HDR visual fidelity on every
 phone/browser; real client behavior remains a final deployment acceptance step.
 
