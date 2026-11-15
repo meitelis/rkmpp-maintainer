@@ -80,8 +80,8 @@ With `MAINTAINER_ACTION=idle`, open the maintainer container's **Console**, sele
 First validate failure handling with the actual isolated daemon, then run the model repair:
 
 ```sh
-python3 /opt/maintainer/maintainer.py runtime-check
-python3 /opt/maintainer/maintainer.py smoke
+python3 /opt/maintainer/maintainer.py runtime-check --wait-for-window
+python3 /opt/maintainer/maintainer.py smoke --wait-for-window
 ```
 
 Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
@@ -105,7 +105,7 @@ For the historical Memories upgrade:
 python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base-ref d6a9471dfbd3dd721bd67698c062ddcc773e232c --source-version 11.1.1
 ```
 
-This starts from the actual pre-upgrade fork, reconciles upstream changes, lets Ornith inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
+This starts from the actual pre-upgrade fork, reconciles upstream changes, lets the coding-profile Qwen model inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
 
 The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must complete a missing required observation, edit already-read source, complete its review, or report a specific blocker. During this restricted phase, observation tools may only access the exact outstanding required paths; unrelated reads remain forbidden. Required file and diff observations include every paginated line, with explicit continuation; a truncated first page cannot complete a required observation. An impossible minimum review budget fails before generation. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
 
