@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import difflib
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -198,6 +199,12 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     errors = str(error)
                     result.setdefault("repair_failures", []).append({
                         "attempt": attempt + 1, "error": errors[-12000:]})
+                    # A failed build/qualification never leaves its image tagged
+                    # as a deployable candidate in our isolated builder.
+                    try:
+                        docker.discard_failed_candidate(tag)
+                    except Exception as cleanup_error:
+                        result.setdefault("cleanup_warnings", []).append(str(cleanup_error))
                     save_json(job / "result.json", result)
                     if attempt + 1 == rounds:
                         raise RuntimeError(f"Candidate failed after {rounds} check/build/hardware attempts: {errors}") from error
@@ -215,16 +222,22 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             result["artifact_status"] = "ready-to-deploy" if reviewed else "requires-source-review"
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
+            result["candidate_diff_sha256"] = hashlib.sha256((job / "candidate.diff").read_bytes()).hexdigest()
             if project == "memories":
                 with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
                     archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
             save_json(job / "result.json", result)
             if publish_code:
-                # Publication failure does not discard a successfully built local image.
+                # Publication is strictly downstream of independent hardware and
+                # a complete model review; never publish debug/historical jobs.
+                if not reviewed or result["kind"] != "release-candidate":
+                    raise RuntimeError("Publishing requires a reviewed, hardware-qualified release candidate")
                 try:
                     result.update(publish(project, root, target, job))
                 except Exception as error:
                     result["publication_error"] = str(error)
+                    result["publication_status"] = "retryable"
+                    result["status"] = "publication-pending"
         return result
     except Exception as error:
         result.update(status="failed", error=str(error), ready_to_deploy=False, artifact_status="blocked")
