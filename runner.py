@@ -211,7 +211,7 @@ class Docker:
         """
         self.verify()
         root = Path(root).resolve()
-        scratch = root.parent / "hardware"
+        scratch = root.parent / Path(log).stem
         scratch.mkdir(exist_ok=False)
         image_id = command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
         arch = command(["docker", "image", "inspect", tag, "--format", "{{.Architecture}}"], timeout=30)
@@ -219,6 +219,7 @@ class Docker:
             raise RuntimeError("Hardware qualification requires an ARM64 candidate")
         for path in ("/dev/dri", "/dev/dma_heap", "/dev/mpp_service", "/dev/rga"):
             command(["docker", "run", "--rm", "--network", "none", "--privileged",
+                     "--label", "rkmpp.maintainer.transient=true",
                      "--entrypoint", "sh", self.config["node_image"],
                      "-c", f"test -e {path}"], timeout=60)
         if project == "immich":
@@ -246,6 +247,15 @@ class Docker:
                     env={"RKMPP_SMOKE_SKIP_BUILD": "1", "RKMPP_SMOKE_OUTPUT": str(scratch)},
                     timeout=3600, log=log)
             evidence = validate_memories_matrix(scratch)
+            # The shipping runtime must contain precisely the smoke-tested engine.
+            tested_hash = command(["docker", "run", "--rm", "--network", "none",
+                "--entrypoint", "sha256sum", "local/memories-rkmpp:v11-smoke",
+                "/app/go-vod"], timeout=60).split()[0]
+            shipping_hash = command(["docker", "run", "--rm", "--network", "none",
+                "--entrypoint", "sha256sum", tag, "/app/go-vod"], timeout=60).split()[0]
+            if tested_hash != shipping_hash:
+                raise RuntimeError("Memories shipping go-vod differs from hardware-tested binary")
+            evidence["go_vod_sha256"] = shipping_hash
         else:
             raise RuntimeError("No RKMPP hardware qualification for " + project)
         if command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30) != image_id:
