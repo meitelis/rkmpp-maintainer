@@ -207,7 +207,7 @@ class Docker:
             # A zero exit code can hide a skipped Node test; all three
             # original/HEVC/AAC fragment cases are mandatory, with no skips.
             def count(key):
-                match = re.search(r"(?m)^\\s*[ℹ#]?\\s*" + key + r"\\s+(\\d+)\\s*$", report)
+                match = re.search(r"(?m)^\s*[ℹ#]?\s*" + key + r"\s+(\d+)\s*$", report)
                 return int(match[1]) if match else None
             if (count("tests"), count("pass"), count("fail"), count("skipped")) != (3, 3, 0, 0):
                 raise RuntimeError("Incomplete Immich FFmpeg fragment qualification: " + str(log))
