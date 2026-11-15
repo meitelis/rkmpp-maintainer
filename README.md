@@ -1,5 +1,10 @@
 # RKMPP maintainer
 
+## Only deliverable: verified images
+
+The maintainer **never deploys or merges** applications. It prepares Immich and Memories images, repairs failed source/build/hardware tests in bounded cycles, and exports **only independently hardware-qualified** candidate image archives. See [ready-to-deploy image gates](READY_IMAGES.md) for the exact acceptance checks, logs, exported image paths and limits. Real browser playback acceptance remains the owner's decision.
+
+
 A **Portainer-managed Docker stack** for the 24 GB ROCK 5B+ that watches official Immich and Memories releases, adapts your RKMPP integrations with a local model, tests the result and exports candidate images. Application deployment stays manual.
 
 The Radxa installation belongs under **`/armbian/rkmpp-maintainer`**. Deploy, update, start and stop its services in **Portainer** using [portainer-stack.yml](portainer-stack.yml). The root `compose.yml` is for development and CI, not the Radxa deployment.
