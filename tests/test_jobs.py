@@ -186,6 +186,71 @@ class JobTests(unittest.TestCase):
                 self.assertFalse(result['ready_to_deploy'])
                 self.assertIn('differs', result['error'])
 
+
+    def test_hardware_failure_is_repaired_and_retested(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            calls = []
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            @contextlib.contextmanager
+            def model(**kwargs):
+                calls.append('model-start')
+                try: yield 'http://local'
+                finally: calls.append('model-stop')
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+                 patch('maintainer.git', return_value='diff'), \
+                 patch('maintainer.run_agent', return_value={
+                     'summary':'source repair verified','review_complete':True,
+                     'assessment':'complete','blockers':[]}), patch('maintainer.Docker') as cls:
+                docker = cls.return_value
+                docker.model.side_effect = model
+                docker.checks.side_effect = lambda *args: calls.append('checks')
+                docker.build.side_effect = lambda *args: calls.append('build')
+                def hardware(*args):
+                    calls.append('hardware')
+                    if calls.count('hardware') == 1:
+                        raise RuntimeError('MPP decode hardware regression')
+                    return {'ok': True, 'image_id': 'sha256:fixed'}
+                docker.hardware.side_effect = hardware
+                docker.export.return_value = 'sha256:fixed'
+                result = maintainer.run_job('immich', {'repair_rounds':3, 'agent_turns':6},
+                    workspace, '3.4.1')
+                self.assertEqual(result['status'], 'built')
+                self.assertTrue(result['ready_to_deploy'])
+                self.assertEqual(result['repair_attempts'], 2)
+                self.assertEqual(len(result['repair_failures']), 1)
+                self.assertIn('MPP decode', result['repair_failures'][0]['error'])
+                self.assertEqual(calls, ['model-start','model-stop','checks','build','hardware',
+                                        'model-start','model-stop','checks','build','hardware'])
+                docker.export.assert_called_once()
+
+    def test_exhausted_hardware_repairs_never_export(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+                 patch('maintainer.git', return_value='diff'), \
+                 patch('maintainer.run_agent', return_value={
+                     'summary':'tried','review_complete':True,'assessment':'complete','blockers':[]}), \
+                 patch('maintainer.Docker') as cls:
+                docker = cls.return_value
+                docker.model.return_value.__enter__.return_value = 'http://local'
+                docker.hardware.side_effect = RuntimeError('unresolved hardware failure')
+                result = maintainer.run_job('memories', {'repair_rounds':3, 'agent_turns':6},
+                    workspace, '11.1.5')
+                self.assertEqual(result['status'], 'failed')
+                self.assertFalse(result['ready_to_deploy'])
+                self.assertEqual(result['artifact_status'], 'blocked')
+                self.assertEqual(len(result['repair_failures']), 3)
+                self.assertEqual(docker.hardware.call_count, 3)
+                docker.export.assert_not_called()
+
     def test_run_cli_accepts_built_as_a_successful_build(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp)/'config.json'
