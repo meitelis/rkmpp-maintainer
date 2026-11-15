@@ -74,7 +74,7 @@ def verify_release_image(job, result):
                 raise RuntimeError("Docker export must contain exactly one matching candidate tag")
             config_name = matches[0].get("Config")
             if (not isinstance(config_name, str) or
-                    re.fullmatch(r"[a-f0-9]{64}\\.json", config_name) is None):
+                    re.fullmatch(r"[a-f0-9]{64}\.json", config_name) is None):
                 raise RuntimeError("Docker export has invalid image config path")
             configuration = saved.getmember(config_name)
             if configuration.size <= 0 or configuration.size > 16_000_000:
