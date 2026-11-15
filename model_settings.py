@@ -31,7 +31,7 @@ def require_model_memory(config, spec, runtime):
                       if line.startswith("MemAvailable:")), 0)
     overhead = runtime.get("estimated_overhead_bytes", 1536*1024**2)
     reserve = config.get("work_window",{}).get("memory_headroom_bytes",1024**3)
-    required = spec["bytes"] + overhead + reserve
+    required = max(spec["bytes"] + overhead, memory_bytes(runtime["memory"]) if "memory" in runtime else 0) + reserve
     if available < required:
         raise RuntimeError(f"Host RAM reserved for other services: need {required} available bytes, have {available}")
     return {"available_before_model_bytes":available,"estimated_model_and_reserve_bytes":required}
