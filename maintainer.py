@@ -179,9 +179,20 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     errors = str(error)
                     if attempt + 1 == (1 if no_agent else config["repair_rounds"]):
                         raise
+            phase(job, result, "hardware")
+            hardware = docker.hardware(project, root, tag, job / "hardware.log")
+            if not isinstance(hardware, dict) or hardware.get("ok") is not True or not hardware.get("image_id"):
+                raise RuntimeError("Independent RK3588 hardware qualification was not completed")
+            result["hardware_qualification"] = hardware
+            # Do not confuse a verified artifact with approval to change running services.
+            reviewed = not no_agent and result["agent_review"].get("review_complete") is True
+            result["ready_to_deploy"] = bool(reviewed)
+            result["artifact_status"] = "ready-to-deploy" if reviewed else "requires-source-review"
             phase(job, result, "export")
             result.update(status="built", image=tag,
                           image_id=docker.export(tag, job / "image.tar"))
+            if result["image_id"] != hardware["image_id"]:
+                raise RuntimeError("Exported image differs from hardware-qualified candidate")
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
             if project == "memories":
