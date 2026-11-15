@@ -60,7 +60,7 @@ def host_idle(config, profile="coding"):
 
 def admission(config, profile="coding", now=None):
     result = window(config, now)
-    if result["allowed"] and config.get("work_window", {}).get("enabled", False):
+    if result["allowed"] and config.get("work_window") and config["work_window"].get("enabled", True):
         result.update(host_idle(config, profile))
     return result
 
