@@ -48,7 +48,7 @@ def page(text, start=1):
     output, chars = [], 0
     for i in range(start - 1, min(len(lines), start + 78)):
         line = f"{i+1}: {lines[i]}"
-        if len(line) > 9500:
+        if len(line) + 1 > 9500:
             raise AgentBlocked("A source/diff line exceeds the review window; manual review required")
         if chars + len(line) + 1 > 9500:
             break
