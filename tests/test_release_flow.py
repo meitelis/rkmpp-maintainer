@@ -1,5 +1,6 @@
 """Fail-closed publication, owner acceptance, and isolated cleanup regressions."""
 import datetime
+import hashlib
 import json
 import os
 import tempfile
@@ -70,6 +71,22 @@ class ReleaseFlowTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"explicit source review"):
                 maintainer.accept_deployed_candidate(Path(temp),"job","sha256:qualified")
                 
+    def test_publication_retry_rejects_tampered_source_before_remote_write(self):
+        with tempfile.TemporaryDirectory() as temp:
+            job=Path(temp)/"jobs"/"memories-11.1.5-aabbccdd"
+            (job/"source").mkdir(parents=True)
+            result=qualified(job)
+            result["status"]="publication-pending"
+            saved=b"original diff\n"
+            result["candidate_diff_sha256"]=hashlib.sha256(saved).hexdigest()
+            (job/"candidate.diff").write_bytes(saved)
+            (job/"result.json").write_text(json.dumps(result))
+            with patch("maintainer.git",return_value="different diff"), \
+                 patch("maintainer.publish") as publish:
+                with self.assertRaisesRegex(RuntimeError,"source changed"):
+                    maintainer.publish_existing(Path(temp),job.name)
+            publish.assert_not_called()
+
     def test_accept_rejects_wrong_running_image_without_contacting_github(self):
         with tempfile.TemporaryDirectory() as temp:
             job=Path(temp)/"jobs"/"memories-11.1.5-aabbccdd"
