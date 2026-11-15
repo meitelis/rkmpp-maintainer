@@ -12,7 +12,7 @@ class HardwareGateTests(unittest.TestCase):
         report.parent.mkdir(exist_ok=True)
         cases = [{"name": name, "ok": True} for name in sorted(required_immich_cases())] if cases is None else cases
         report.write_text(json.dumps({"schemaVersion": 1, "label": "candidate-1234",
-            "quick": True, "cases": cases, "passed": len(cases), "failed": 0, "ok": True, **kwargs}))
+            "quick": False, "cases": cases, "passed": len(cases), "failed": 0, "ok": True, **kwargs}))
         return report
 
     def test_exact_38_case_matrix_accepted(self):
