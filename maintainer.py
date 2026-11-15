@@ -242,6 +242,14 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
     except Exception as error:
         result.update(status="failed", error=str(error), ready_to_deploy=False, artifact_status="blocked")
         (job / "error.txt").write_text(traceback.format_exc())
+        # Also cover failures outside the inner check/build retry loop (model
+        # refusal, export mismatch, an unexpected exception). Only our own
+        # candidate tag on the verified isolated daemon may be discarded.
+        if "docker" in locals() and "tag" in locals():
+            try:
+                docker.discard_failed_candidate(tag)
+            except Exception as cleanup_error:
+                result.setdefault("cleanup_warnings", []).append(str(cleanup_error))
         return result
     finally:
         result["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
