@@ -203,6 +203,57 @@ class Docker:
             finally:
                 self.cleanup(name)
 
+    def hardware(self, project, root, tag, log):
+        """Run the built RKMPP image through on-board hardware tests.
+
+        Only the isolated Docker daemon is accepted; production image stores,
+        application databases and real media are never mounted.
+        """
+        self.verify()
+        root = Path(root).resolve()
+        scratch = root.parent / "hardware"
+        scratch.mkdir(exist_ok=False)
+        image_id = command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
+        arch = command(["docker", "image", "inspect", tag, "--format", "{{.Architecture}}"], timeout=30)
+        if arch != "arm64":
+            raise RuntimeError("Hardware qualification requires an ARM64 candidate")
+        for path in ("/dev/dri", "/dev/dma_heap", "/dev/mpp_service", "/dev/rga"):
+            command(["docker", "run", "--rm", "--network", "none", "--privileged",
+                     "--entrypoint", "sh", self.config["node_image"],
+                     "-c", f"test -e {path}"], timeout=60)
+        if project == "immich":
+            from hardware_gate import validate_immich_report
+            name = "rkmpp-maintainer-hardware-" + uuid.uuid4().hex[:12]
+            label = "candidate-" + root.parent.name[-8:]
+            try:
+                command(["docker", "run", "--rm", "--privileged", "--network", "none",
+                         "--name", name, "--label", "rkmpp.maintainer.transient=true",
+                         "--cpus", "4", "--memory", "6g",
+                         "-v", str(root / "scripts/verify-hardware.mjs") + ":/opt/verify-hardware.mjs:ro",
+                         "-v", str(scratch) + ":/scratch", "--entrypoint", "node", tag,
+                         "/opt/verify-hardware.mjs", "--scratch", "/scratch",
+                         "--quick", "--hdr", "--sdr10", "--small", "--audio",
+                         "--fallback", "--rotation", "--memories", "--label", label],
+                        timeout=3600, log=log)
+            finally:
+                self.cleanup(name)
+            evidence = validate_immich_report(scratch, label)
+        elif project == "memories":
+            from hardware_gate import validate_memories_matrix
+            # The upstream fork's matrix builds its own separate smoke image and
+            # invokes its compiled ffmpeg/core/api Go tests on real MPP/RGA.
+            command(["bash", "scripts/test-v11-rkmpp.sh", "--matrix"], cwd=root,
+                    env={"RKMPP_SMOKE_SKIP_BUILD": "1", "RKMPP_SMOKE_OUTPUT": str(scratch)},
+                    timeout=3600, log=log)
+            evidence = validate_memories_matrix(scratch)
+        else:
+            raise RuntimeError("No RKMPP hardware qualification for " + project)
+        if command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30) != image_id:
+            raise RuntimeError("Candidate image identity changed during hardware tests")
+        evidence["image_id"] = image_id
+        evidence["arch"] = arch
+        return evidence
+
     def export(self, tag, destination):
         self.verify()
         size = int(command(["docker", "image", "inspect", tag, "--format", "{{.Size}}"], timeout=30))
