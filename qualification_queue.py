@@ -128,7 +128,12 @@ def run_suite(config, workspace, profile="coding", ignore_window=False, cases=No
         ("real-go-repair",lambda:real_repair(config,workspace,model_profile=profile),"passed"),
         ("hardware",lambda:hardware_checks(config,workspace,
             state["steps"]["real-go-repair"]["result"]["hardware_test_image_id"]),"passed"),
-        ("immich-upgrade",lambda:run_job("immich",config,workspace,"3.4.1",model_profile=profile),"built"),
+        # An actual upgrade rehearsal: current fork main already targets 3.4.1.
+        # Starting at main would fail before the LLM with "target not newer".
+        # This immutable 3.4.0 baseline is the parent of the 3.4.1 release PR.
+        ("immich-upgrade",lambda:run_job("immich",config,workspace,"3.4.1",
+            base_ref="3d82c85b3696f384dc39a8a8a13d9df2a563c558",
+            source_version="3.4.0",model_profile=profile),"built"),
     ]
     state=json.loads(path.read_text()) if path.exists() else {"status":"pending","identity":identity,
         "deployment_approved":False,"model_profile":profile,"window_override":ignore_window,"steps":{}}
