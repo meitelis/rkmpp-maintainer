@@ -59,3 +59,31 @@ def validate_immich_report(scratch, expected_label=None):
             "label": data.get("label"),
             "report": str(report.relative_to(scratch)),
             "required_cases": len(required_immich_cases())}
+
+
+def validate_memories_matrix(scratch):
+    """Require all three independent on-board Go test binaries to execute."""
+    import re
+
+    scratch = Path(scratch)
+    logfile_names = ("ffmpeg-tests.log", "core-tests.log", "api-tests.log")
+    passes = {}
+    for name in logfile_names:
+        logfile = scratch / name
+        if logfile.is_symlink() or not logfile.is_file():
+            raise RuntimeError("Missing Memories hardware test log: " + name)
+        output = logfile.read_text(errors="replace")
+        if not re.search(r"^PASS\s*$", output, re.M):
+            raise RuntimeError("Memories hardware suite did not finish: " + name)
+        if re.search(r"^(?:--- SKIP:|--- FAIL:|FAIL(?:\s|$))", output, re.M):
+            raise RuntimeError("Memories hardware suite skipped or failed tests: " + name)
+        cases = re.findall(r"^--- PASS: (Test\w+)", output, re.M)
+        if not cases or not any(case.startswith("TestRKMPPHardware") for case in cases):
+            raise RuntimeError("Missing actual RKMPP device tests in " + name)
+        passes[name] = len(cases)
+    env = scratch / "environment.txt"
+    if env.is_symlink() or not env.is_file() or "go-vod " not in env.read_text():
+        raise RuntimeError("Missing Memories image/version provenance")
+    return {"ok": True, "passed": sum(passes.values()), "failed": 0,
+            "suites": passes, "logs": list(logfile_names),
+            "environment": "environment.txt"}
