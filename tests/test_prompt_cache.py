@@ -59,7 +59,7 @@ class PromptCacheTests(unittest.TestCase):
         retained = old[0]["content"]
         self.assertTrue(retained.startswith("Controller progress turn "))
         # The most recent action/result must survive compaction.
-        self.assertIn("Tool result 4:", [m["content"] for m in messages])
+        self.assertTrue(any(m["content"].startswith("Tool result 4:") for m in messages))
 
     def test_oversize_single_request_fails_closed(self):
         prefix = [{"role": "system", "content": "x" * 500}]
