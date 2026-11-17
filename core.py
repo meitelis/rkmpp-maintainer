@@ -53,7 +53,7 @@ def clean_env(extra=None):
     return env
 
 
-def command(args, cwd=None, timeout=1800, log=None, env=None):
+def command(args, cwd=None, timeout=1800, log=None, env=None, *, raw=False):
     """Bound the entire process group and keep noisy build output on disk."""
     with contextlib.ExitStack() as stack:
         output = stack.enter_context(open(log, "ab")) if log else subprocess.PIPE
@@ -76,6 +76,8 @@ def command(args, cwd=None, timeout=1800, log=None, env=None):
                 os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
             raise RuntimeError(f"Command timed out or exhausted job budget: {args[0]}") from None
+        if raw and process.returncode == 0 and not log:
+            return data
         if log:
             with open(log, "rb") as handle:
                 handle.seek(max(0, Path(log).stat().st_size - 20000))

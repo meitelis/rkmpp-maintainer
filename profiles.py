@@ -22,8 +22,8 @@ def current_version(project, root):
     return match[1]
 
 
-def git(root, *args):
-    return command(["git", "-C", str(root), *args], timeout=900)
+def git(root, *args, env=None):
+    return command(["git", "-C", str(root), *args], timeout=900, env=env)
 
 
 def upstream_file(upstream, ref, name):

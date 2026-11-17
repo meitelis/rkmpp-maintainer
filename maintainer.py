@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local RKMPP release maintenance. Candidates only; deployment is manual."""
 import argparse
+import base64
 import contextlib
 import difflib
 import datetime
@@ -13,6 +14,8 @@ import tarfile
 import time
 import traceback
 import uuid
+from urllib.error import HTTPError
+from urllib.parse import urlencode
 from pathlib import Path
 from agent import run_agent
 from core import command, http_json, latest_release, locked, save_json, version
@@ -83,34 +86,66 @@ def prepare(project, job, target, base_ref="main", source_version=None):
     return root, upstream, notes, changes
 
 
-def publish(project, root, target, job):
+def candidate_tree(root, job):
+    # Leave the real index intact for build scripts and subsequent repair rounds.
+    env = {"GIT_INDEX_FILE": str((job / "source.index").resolve())}
+    git(root, "read-tree", "HEAD", env=env)
+    git(root, "add", "-A", env=env)
+    return git(root, "write-tree", env=env)
+
+
+def upload_candidate_tree(api, root, base, tree):
+    changes = git(root, "diff-tree", "-r", "--raw", "--no-abbrev", "--no-renames", "-z", base, tree)
+    if not changes:
+        raise RuntimeError("No source change to publish")
+    fields = changes.removesuffix("\0").split("\0")
+    entries = []
+    for header, name in zip(fields[::2], fields[1::2], strict=True):
+        _, mode, _, blob, status = header.split()
+        if mode not in {"100644", "100755"} or status not in {"A", "M"}:
+            raise RuntimeError("Publication requires changed regular files")
+        content = command(["git", "-C", str(root), "cat-file", "blob", blob], raw=True)
+        uploaded = github(api + "/git/blobs", {"encoding": "base64",
+                          "content": base64.b64encode(content).decode("ascii")})
+        if uploaded["sha"] != blob:
+            raise RuntimeError("Uploaded blob differs from qualified source")
+        entries.append({"path": name, "mode": mode, "type": "blob", "sha": blob})
+    base_tree = git(root, "rev-parse", base + "^{tree}")
+    if github(api + "/git/trees", {"base_tree": base_tree, "tree": entries})["sha"] != tree:
+        raise RuntimeError("Remote tree differs from qualified source")
+
+
+def publish(project, root, target, job, tree):
     if not os.environ.get("GITHUB_TOKEN"):
         raise RuntimeError("Publishing needs GITHUB_TOKEN; local candidate is retained")
     profile = PROJECTS[project]
-    base = git(root, "rev-parse", "HEAD")
-    changes = git(root, "diff", "--name-only", "HEAD").splitlines()
-    changes += git(root, "ls-files", "--others", "--exclude-standard").splitlines()
-    elements = []
-    for name in sorted(set(changes)):
-        path = root / name
-        if not path.is_file() or path.is_symlink():
-            raise RuntimeError("Publication refuses deleted or symlinked files")
-        elements.append({"path": name, "mode": "100755" if path.stat().st_mode & 0o111 else "100644",
-                         "type": "blob", "content": path.read_text()})
-    if not elements:
-        raise RuntimeError("No source change to publish")
+    base = json.loads((job / "release.json").read_text())["fork_base"]
+    if not tree or git(root, "rev-parse", "refs/maintainer/qualified-tree") != tree:
+        raise RuntimeError("Missing qualified source tree; requalify before publishing")
     api = "repos/" + profile["fork"]
     # Reject publication against a main branch that moved after qualification.
     # A silently stale fork would invalidate the tested candidate's source base.
     if github(api + "/git/ref/heads/main")["object"]["sha"] != base:
         raise RuntimeError("Fork main advanced after candidate build; reconcile and requalify before publishing")
-    base_tree = github(api + "/git/commits/" + base)["tree"]["sha"]
-    tree = github(api + "/git/trees", {"base_tree": base_tree, "tree": elements})["sha"]
-    commit = github(api + "/git/commits", {"message": f"Prepare {project} {target} RKMPP candidate",
-                                          "tree": tree, "parents": [base]})["sha"]
     branch = "automation/" + project + "-" + target + "-" + job.name[-8:]
-    github(api + "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit})
-    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": False,
+    try:
+        commit = github(api + "/git/ref/heads/" + branch)["object"]["sha"]
+    except HTTPError as error:
+        if error.code != 404:
+            raise
+        upload_candidate_tree(api, root, base, tree)
+        commit = github(api + "/git/commits", {"message": f"Prepare {project} {target} RKMPP candidate",
+                                              "tree": tree, "parents": [base]})["sha"]
+        github(api + "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit})
+    else:
+        remote = github(api + "/git/commits/" + commit)
+        if remote["tree"]["sha"] != tree or [p["sha"] for p in remote["parents"]] != [base]:
+            raise RuntimeError("Existing publication branch differs from the qualified candidate")
+    query = urlencode({"head": profile["fork"].split("/")[0] + ":" + branch, "base": "main", "state": "all"})
+    previous = github(api + "/pulls?" + query)
+    if previous and (len(previous) != 1 or previous[0]["state"] != "open"):
+        raise RuntimeError("Existing candidate PR is closed or ambiguous; review before publishing")
+    pr = previous[0] if previous else github(api + "/pulls", {"head": branch, "base": "main", "draft": False,
         "title": f"Qualified candidate: {project} {target} RKMPP update",
         "body": "Prepared by the local Radxa maintainer after source checks, a complete ARM64 build, "
                 "and isolated RK3588 hardware qualification of the exact exported image ID. "
@@ -119,6 +154,9 @@ def publish(project, root, target, job):
                 "and explicitly accepts this exact PR/image. Failed attempts never publish PRs. "
                 "The local job retains logs, image.tar, result.json and the matching Memories helper where applicable. "
                 "The controller never deploys production apps."})
+    if (pr["head"]["sha"] != commit or pr["head"]["repo"]["full_name"] != profile["fork"]
+            or pr["head"]["ref"] != branch or pr["base"]["sha"] != base or pr["base"]["ref"] != "main"):
+        raise RuntimeError("PR differs from the qualified candidate")
     return {"branch": branch, "commit": commit, "pull_request": pr["html_url"],
             "pull_request_number": pr["number"], "publication_status": "published"}
 
@@ -188,6 +226,8 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 try:
                     phase(job, result, f"checks-{attempt + 1}")
                     validate(root)
+                    if not no_agent and result["kind"] == "release-candidate":
+                        result["candidate_tree"] = candidate_tree(root, job)
                     docker.checks(project, root, job / f"checks-{attempt}.log")
                     phase(job, result, f"build-{attempt + 1}")
                     docker.build(project, root, tag, job / f"build-{attempt}.log")
@@ -195,6 +235,10 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     hardware = docker.hardware(project, root, tag, job / f"hardware-{attempt}.log")
                     if not isinstance(hardware, dict) or hardware.get("ok") is not True or not hardware.get("image_id"):
                         raise RuntimeError("Independent RK3588 hardware qualification was not completed")
+                    if "candidate_tree" in result:
+                        if candidate_tree(root, job) != result["candidate_tree"]:
+                            raise RuntimeError("Candidate source changed during qualification")
+                        git(root, "update-ref", "refs/maintainer/qualified-tree", result["candidate_tree"])
                     result["hardware_qualification"] = hardware
                     result["repair_attempts"] = attempt + 1
                     break
@@ -249,7 +293,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 if not reviewed or result["kind"] != "release-candidate":
                     raise RuntimeError("Publishing requires a reviewed, hardware-qualified release candidate")
                 try:
-                    result.update(publish(project, root, target, job))
+                    result.update(publish(project, root, target, job, result["candidate_tree"]))
                 except Exception as error:
                     result["publication_error"] = str(error)
                     result["publication_status"] = "retryable"
@@ -306,7 +350,7 @@ def publish_existing(workspace, job_name):
     image_id = command(["docker", "image", "inspect", result["image"], "--format", "{{.Id}}"], timeout=30)
     if image_id != result["image_id"]:
         raise RuntimeError("Candidate image ID changed since hardware qualification")
-    result.update(publish(result["project"], job / "source", result["target"], job))
+    result.update(publish(result["project"], job / "source", result["target"], job, result.get("candidate_tree")))
     result["status"] = "built"
     result.pop("publication_error", None)
     save_json(job / "result.json", result)
