@@ -34,6 +34,9 @@ class FileTests(unittest.TestCase):
                      "overlays/server/foo.spec.ts"]:
             self.assertFalse(editable("memories", name), name)
             self.assertFalse(editable("immich", name), name)
+        for name in ["compose.yml", "upstream.json", "upstream-version.json", "README.md", "NOTICE"]:
+            self.assertFalse(editable("memories", name), name)
+            self.assertFalse(editable("immich", name), name)
 
     def test_real_tool_loop_edits_only_source(self):
         actions = iter([{"action":"read", "path":"go-vod/source.go"},

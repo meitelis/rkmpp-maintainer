@@ -34,6 +34,10 @@ class ReconciliationTests(unittest.TestCase):
             (fork/"go-vod").mkdir()
             (fork/"go-vod/main.go").write_text(base+'\n// RKMPP custom code\n')
             (fork/"README.md").write_text('Nextcloud Memories 11.1.1\nMeasured on 11.1.1\n')
+            fixture = fork/"tests/fixtures/historical.json"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text('{"recorded_upstream":"11.1.1"}')
+            (fork/"go-vod/measurement.go").write_text('// recorded on Memories 11.1.1\n')
             info = fork/"memories_rkmpp_v11/appinfo"
             info.mkdir(parents=True)
             (info/"info.xml").write_text('<version>1.1.27</version>')
@@ -45,6 +49,8 @@ class ReconciliationTests(unittest.TestCase):
             self.assertEqual((fork/"README.md").read_text(), 'Nextcloud Memories 11.1.2\nMeasured on 11.1.1\n')
             self.assertEqual(current_version("memories", fork), "11.1.2")
             self.assertIn("1.1.28", (info/"info.xml").read_text())
+            self.assertEqual(fixture.read_text(), '{"recorded_upstream":"11.1.1"}')
+            self.assertIn("11.1.1", (fork/"go-vod/measurement.go").read_text())
             validate(fork)
 
     def test_unresolved_conflicts_fail_validation(self):

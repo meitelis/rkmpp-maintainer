@@ -1,7 +1,7 @@
 {
   "poll_seconds": 21600,
   "repair_rounds": 3,
-  "agent_turns": 24,
+  "agent_turns": 48,
   "model_runtime": {
     "memory": "12g",
     "context_size": 16384,
@@ -15,7 +15,9 @@
     "min_p": 0.0,
     "presence_penalty": 0.0,
     "max_tokens": 4096,
-    "chat_template_kwargs": {"enable_thinking": true},
+    "chat_template_kwargs": {
+      "enable_thinking": true
+    },
     "reasoning_format": "deepseek"
   },
   "llama_image": "ghcr.io/ggml-org/llama.cpp:server@sha256:086942d6ac097c894d9d5bbaf8085c53af85e113fbb9d6d61b3748863c86aa5f",
@@ -31,10 +33,55 @@
       "bytes": 6642544576
     },
     "coding": {
-      "url": "https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/resolve/abdd624b12ebf020b767fff532ff44fe552b28c3/Ornith-1.5-9B-Q5_K_M.gguf",
-      "filename": "Ornith-1.5-9B-Q5_K_M.gguf",
-      "sha256": "e4d9634a3b6546a5c00a8680568fe1125f6c98c704ee51ae52ba07650fb4247d",
-      "bytes": 6642544576
+      "url": "https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/1f4ceb1041258b3fbfe59e1175d1321c6b41863b/Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf",
+      "filename": "Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf",
+      "sha256": "ddad34d487a85c5a5872b422a15b1f3db196c7912ecd939e7e1ef373cbc7ef29",
+      "bytes": 14583005504,
+      "runtime": {
+        "memory": "18g",
+        "context_size": 16384,
+        "threads": 4,
+        "threads_batch": 4,
+        "cpu_set": "4-7",
+        "no_swap": true,
+        "reasoning_budget": 1024,
+        "batch_size": 256,
+        "ubatch_size": 128,
+        "flash_attention": "on",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "cache_ram": 256,
+        "context_checkpoints": 4
+      },
+      "generation": {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "max_tokens": 4096,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        },
+        "reasoning_format": "deepseek",
+        "repeat_penalty": 1.05
+      }
     }
+  },
+  "job_timeout_seconds": 21600,
+  "disk_reserve_bytes": 2147483648,
+  "build_free_bytes": 8589934592,
+  "work_window": {
+    "enabled": true,
+    "timezone": "Europe/Dublin",
+    "start_hour": 0,
+    "end_hour": 8,
+    "idle_only": true,
+    "max_cpu_percent": 25,
+    "max_load_per_core": 0.3,
+    "memory_headroom_bytes": 1073741824,
+    "sample_seconds": 1,
+    "idle_retry_seconds": 300,
+    "finish_current_job": true
   }
 }

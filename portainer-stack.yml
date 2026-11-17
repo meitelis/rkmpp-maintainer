@@ -4,10 +4,24 @@ services:
   builder:
     image: docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
     privileged: true
+    # Keep 1 GiB above the coding model's own 18 GiB ceiling for the
+    # isolated daemon and worker overhead; host admission still reserves RAM.
+    mem_limit: 19g
+    memswap_limit: 19g
+    cpus: 6
+    cpu_shares: 128
     restart: unless-stopped
     environment:
       DOCKER_TLS_CERTDIR: ""
     command: ["--label=rkmpp.maintainer=isolated", "--storage-driver=${DIND_STORAGE_DRIVER:-overlay2}"]
+    # Expose RK3588 media devices to this isolated daemon so it can validate
+    # hardware on the actual board before exporting any deployable candidate.
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga
+      - /dev/mali0:/dev/mali0
     volumes:
       - type: bind
         source: /armbian/rkmpp-maintainer/builder
@@ -30,6 +44,7 @@ services:
     image: local/rkmpp-maintainer:prototype-3-portainer
     pull_policy: never
     restart: unless-stopped
+    mem_limit: 512m
     depends_on:
       builder:
         condition: service_healthy
@@ -37,8 +52,23 @@ services:
       DOCKER_HOST: tcp://builder:2375
       DOCKER_TLS_CERTDIR: ""
       AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      # Independent opt-in: publish only fully hardware-qualified candidates.
+      AUTO_PUBLISH: ${AUTO_PUBLISH:-false}
+      # A fine-grained token scoped to only the two fork repositories.
+      # Never pass this token to builder/model/verification containers.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
-    command: ["${MAINTAINER_ACTION:-idle}"]
+    # The Memories on-board matrix enumerates /dev nodes in the controller.
+    # Hardware is exercised only inside the isolated Docker builder.
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mpp_service:/dev/mpp_service
+      - /dev/rga:/dev/rga
+      - /dev/mali0:/dev/mali0
+    # Monitor releases by default; AUTO_UPDATE=false prevents unattended builds.
+    # Portainer MAINTAINER_ACTION environment setting may override this default.
+    command: ["${MAINTAINER_ACTION:-watch}"]
     volumes:
       - type: bind
         source: /armbian/rkmpp-maintainer/data
