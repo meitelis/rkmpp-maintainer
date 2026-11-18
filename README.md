@@ -50,7 +50,7 @@ cd /armbian
 git clone https://github.com/meitelis/rkmpp-maintainer.git
 cd rkmpp-maintainer
 mkdir -p data builder
-docker build -t local/rkmpp-maintainer:prototype-3-portainer .
+docker build -t local/rkmpp-maintainer:pr10 .
 ```
 
 Building the image is a host preparation step. Portainer owns the running services.
@@ -69,7 +69,7 @@ In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Re
 | `AUTO_UPDATE` | `false` initially |
 | `DIND_STORAGE_DRIVER` | `overlay2` unless the existing builder used another driver |
 
-Disable image re-pulling for the locally built maintainer image. It is `local/rkmpp-maintainer:prototype-3-portainer` with `pull_policy: never`; this stack file has no build directive. Enter variables in Portainer or load the existing `.env` file there; Portainer does not automatically read `/armbian/rkmpp-maintainer/.env`.
+Disable image re-pulling for the locally built maintainer image. It is `local/rkmpp-maintainer:pr10` with `pull_policy: never`; this stack file has no build directive. Enter variables in Portainer or load the existing `.env` file there; Portainer does not automatically read `/armbian/rkmpp-maintainer/.env`.
 
 Deploy the stack. Its control should show **Total**, with a healthy builder and running maintainer. No host Docker socket or host ports are mounted/published by this stack. The builder remains privileged, as in the tested prototype, and is intended for these trusted source repositories.
 
@@ -134,7 +134,7 @@ Pull the source and rebuild its local image under `/armbian`:
 ```sh
 cd /armbian/rkmpp-maintainer
 git pull --ff-only
-docker build -t local/rkmpp-maintainer:prototype-3-portainer .
+docker build -t local/rkmpp-maintainer:pr10 .
 ```
 
 Then update/redeploy the **existing stack in Portainer**, keeping its environment settings and disabling image re-pulling. Run validation from its Console. Do not use `docker compose up`, `down`, or `run` to manage the Portainer deployment. The one-time migration above is the exception that removes the legacy external project.

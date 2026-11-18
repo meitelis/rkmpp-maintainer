@@ -41,7 +41,7 @@ services:
       start_period: 10s
     networks: [maintainer]
   maintainer:
-    image: local/rkmpp-maintainer:prototype-3-portainer
+    image: local/rkmpp-maintainer:pr10
     pull_policy: never
     restart: unless-stopped
     mem_limit: 512m
