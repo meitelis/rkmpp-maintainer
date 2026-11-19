@@ -150,7 +150,7 @@ def previous_review(job, project, target):
             result = json.loads((path.parent / "result.json").read_text())
             if (result.get("kind") == "release-candidate"
                     and result.get("status") in {"failed", "interrupted"}
-                    and result.get("phase") == "model-review-1"
+                    and result.get("phase") in {"model-review-1", "export"}
                     and (path.parent / "release.json").read_bytes() == release):
                 return path
         except (OSError, ValueError):

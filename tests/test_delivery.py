@@ -16,16 +16,17 @@ from delivery import verify_release_image
 
 class DeliveryGateTests(unittest.TestCase):
     def prepare(self, directory, *, project="immich", config_match=True,
-                checksum_match=True, helper=True):
+                checksum_match=True, helper=True, blob=False, corrupt_config=False):
         job=Path(directory)
         content=b'{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
         digest=hashlib.sha256(content).hexdigest()
+        config_path = "blobs/sha256/" + digest if blob else digest + ".json"
         expected_id="sha256:" + (digest if config_match else "0"*64)
         image=f"local/{project}-rkmpp:candidate-11.1.5-aabbccdd"
         with tarfile.open(job/"image.tar","w") as output:
             members={
-                digest+".json":content,
-                "manifest.json":json.dumps([{"Config":digest+".json",
+                config_path:content + (b"x" if corrupt_config else b""),
+                "manifest.json":json.dumps([{"Config":config_path,
                     "RepoTags":[image],"Layers":["layer/layer.tar"]}]).encode(),
                 "layer/layer.tar":b"layer contents"
             }
@@ -57,6 +58,14 @@ class DeliveryGateTests(unittest.TestCase):
             self.assertTrue(delivery["bytes"]>1024)
             self.assertEqual(delivery["sha256"],hashlib.sha256(
                 (Path(directory)/"image.tar").read_bytes()).hexdigest())
+
+    def test_blob_layout_validates_config_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.prepare(directory, blob=True)
+            self.assertEqual(verify_release_image(directory, result)["image_id"], result["image_id"])
+            result = self.prepare(directory, blob=True, corrupt_config=True)
+            with self.assertRaisesRegex(RuntimeError, "config does not match"):
+                verify_release_image(directory, result)
 
     def test_corrupt_archive_never_counts_as_success(self):
         with tempfile.TemporaryDirectory() as directory:
