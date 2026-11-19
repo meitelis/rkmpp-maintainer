@@ -138,6 +138,23 @@ def review_targets(project, root, changes):
     return {"read":list(dict.fromkeys(local)), "diff":list(dict.fromkeys([*paths, *runtime]))}
 
 
+def previous_review(job, project, target):
+    release = (job / "release.json").read_bytes()
+    candidates = sorted(job.parent.glob(f"{project}-{target}-*/agent-0.jsonl"),
+                        key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        try:
+            result = json.loads((path.parent / "result.json").read_text())
+            if (result.get("kind") == "release-candidate"
+                    and result.get("status") in {"failed", "interrupted"}
+                    and result.get("phase") == "model-review-1"
+                    and (path.parent / "release.json").read_bytes() == release):
+                return path
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def run_job(project, config, workspace, target, base_ref="main", source_version=None, publish_code=False, no_agent=False,
             model_profile="coding"):
     job = workspace / "jobs" / (project + "-" + target + "-" + uuid.uuid4().hex[:8])
@@ -180,7 +197,9 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                             lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
                             project, job / f"agent-{attempt}.jsonl", turns=config["agent_turns"],
                             generation=settings(config, model_profile)[2],
-                            required_observations=review_targets(project, root, changes))
+                            required_observations=review_targets(project, root, changes),
+                            previous_transcript=previous_review(job, project, target)
+                            if attempt == 0 and result["kind"] == "release-candidate" else None)
                         result["agent_review"] = review
                         save_json(job / f"agent-review-{attempt}.json", review)
                         save_json(job / "agent-review.json", review)

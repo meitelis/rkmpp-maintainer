@@ -40,6 +40,30 @@ class PromptCacheTests(unittest.TestCase):
             records = [json.loads(line) for line in (root / "agent.jsonl").read_text().splitlines()]
             self.assertTrue(all(record["compacted_exchanges"] == 0 for record in records))
 
+    def test_retry_reuses_unchanged_reads_but_requests_new_decision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "go-vod").mkdir()
+            source = root / "go-vod/source.go"
+            source.write_text("old source")
+            read = {"action": "read", "path": "go-vod/source.go"}
+            finish = {"action": "finish", "summary": "Reviewed",
+                      "review_complete": True, "blockers": []}
+
+            def run(name, replies, previous=None):
+                actions = iter(replies)
+                return run_agent(root, root, "upgrade", lambda _: "", "local", "memories",
+                                 root / name, previous_transcript=previous,
+                                 responder=lambda *args: json.dumps(next(actions)))
+
+            run("first", [read, finish])
+            self.assertTrue(run("same", [finish], root / "first")["review_complete"])
+            source.write_text("changed source")
+            run("changed", [read, finish], root / "first")
+            for name, expected in [("same", True), ("changed", False)]:
+                records = [json.loads(row) for row in (root / name).read_text().splitlines()]
+                self.assertEqual([r["reused_read"] for r in records], [expected, False])
+
     def test_compaction_removes_only_whole_old_exchanges(self):
         prefix = [{"role": "system", "content": "System instructions"},
                   {"role": "user", "content": "Review task"}]

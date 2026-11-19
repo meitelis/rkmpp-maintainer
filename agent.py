@@ -213,10 +213,34 @@ def complete(endpoint, messages, timeout=1800, settings=None, allowed_actions=No
     return content
 
 
+def reusable_reads(transcript, files, official, diff_reader):
+    """Replay only a verified prefix of successful, read-only model actions."""
+    if transcript is None:
+        return
+    with Path(transcript).open() as log:
+        for line in log:
+            try:
+                record = json.loads(line)
+                raw = record["response"]
+                action = json.loads(raw)
+                kind, name = action["action"], action["path"]
+                if kind not in {"read", "upstream", "diff"} or record.get("tool_error"):
+                    return
+                path = (files if kind == "read" else official).path(name)
+                content = diff_reader(name) if kind == "diff" else path.read_text()
+                output, info = page(content, action.get("start", 1))
+                if info != record.get("page") or output != record.get("result"):
+                    return
+            except (AgentError, ValueError, OSError, TypeError, KeyError):
+                return
+            yield raw
+
+
 def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, turns=24,
-              responder=None, generation=None, required_observations=None, require_edit=False):
+              responder=None, generation=None, required_observations=None, require_edit=False, previous_transcript=None):
     files = Files(root, lambda p: editable(project, p))
     official = Files(upstream, lambda _: False)
+    replay = reusable_reads(previous_transcript, files, official, diff_reader)
     history = []
     prefix = [{"role": "system", "content": SYSTEM},
               {"role": "user", "content": task[:10000]}]
@@ -269,9 +293,12 @@ def run_agent(root, upstream, task, diff_reader, endpoint, project, transcript, 
         if compacted:
             print(f"Controller: compacted {compacted} old exchanges at context boundary", flush=True)
         started, metrics = time.monotonic(), {}
-        raw = (responder(endpoint, messages) if responder else
+        raw = next(replay, None)
+        reused = raw is not None
+        if not reused:
+            raw = (responder(endpoint, messages) if responder else
                complete(endpoint, messages, settings=generation, allowed_actions=allowed, metrics=metrics))
-        record = {"turn":turn, "response":raw, "timestamp":time.time(),
+        record = {"reused_read":reused, "turn":turn, "response":raw, "timestamp":time.time(),
                   "elapsed_seconds":time.monotonic()-started,
                   "prompt_chars":sum(len(m["content"]) for m in messages),
                   "compacted_exchanges":compacted, **metrics}
