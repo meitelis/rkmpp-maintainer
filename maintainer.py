@@ -139,7 +139,10 @@ def review_targets(project, root, changes):
 
 
 def previous_review(job, project, target):
-    release = (job / "release.json").read_bytes()
+    try:
+        release = (job / "release.json").read_bytes()
+    except FileNotFoundError:
+        return None  # Without a release identity, start a fresh review.
     candidates = sorted(job.parent.glob(f"{project}-{target}-*/agent-0.jsonl"),
                         key=lambda path: path.stat().st_mtime, reverse=True)
     for path in candidates:
