@@ -57,6 +57,19 @@ def verify_release_image(job, result):
         actual = hashlib.file_digest(stream, "sha256").hexdigest()
     if expected[:64] != actual:
         raise RuntimeError("Candidate Docker export checksum mismatch")
+    verify_archive_config(archive, image, image_id)
+
+    if result.get("project") == "memories":
+        helper = job / "memories-helper.tar.gz"
+        if helper.is_symlink() or not helper.is_file() or not tarfile.is_tarfile(helper):
+            raise RuntimeError("Memories release requires its matching Nextcloud helper")
+    return {"image": image, "image_id": image_id,
+            "archive": str(archive), "sha256": actual,
+            "bytes": archive.stat().st_size,
+            "helper": str(job / "memories-helper.tar.gz") if result.get("project") == "memories" else None}
+
+
+def verify_archive_config(archive, image, image_id):
     # Docker save includes a manifest mapping repo tags to layers/config.
     # Inspect that manifest to reject an unrelated or malformed tar export.
     try:
@@ -87,12 +100,3 @@ def verify_release_image(job, result):
                 raise RuntimeError("Docker export config does not match hardware-tested image ID")
     except (tarfile.TarError, OSError, json.JSONDecodeError, KeyError) as error:
         raise RuntimeError("Docker export is invalid: " + str(error)) from error
-
-    if result.get("project") == "memories":
-        helper = job / "memories-helper.tar.gz"
-        if helper.is_symlink() or not helper.is_file() or not tarfile.is_tarfile(helper):
-            raise RuntimeError("Memories release requires its matching Nextcloud helper")
-    return {"image": image, "image_id": image_id,
-            "archive": str(archive), "sha256": actual,
-            "bytes": archive.stat().st_size,
-            "helper": str(job / "memories-helper.tar.gz") if result.get("project") == "memories" else None}
