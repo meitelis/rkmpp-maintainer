@@ -61,6 +61,22 @@ class PromptCacheTests(unittest.TestCase):
         # The most recent action/result must survive compaction.
         self.assertTrue(any(m["content"].startswith("Tool result 4:") for m in messages))
 
+    def test_compaction_leaves_room_for_incremental_turns(self):
+        def exchange(i):
+            return [{"role": "user", "content": str(i)},
+                    {"role": "assistant", "content": "read"},
+                    {"role": "user", "content": "x" * 3500}]
+        history = [m for i in range(10) for m in exchange(i)]
+        progress = {"role": "user", "content": "review"}
+        messages, dropped = bounded_messages([], history, progress)
+        self.assertGreater(dropped, 0)
+        self.assertLessEqual(sum(len(m["content"]) for m in messages), 12000)
+        self.assertEqual(history[-3:], exchange(9))
+        history.extend([progress, *exchange(10)[1:]])
+        following, dropped = bounded_messages([], history, progress)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(following[:len(messages)], messages)
+
     def test_oversize_single_request_fails_closed(self):
         prefix = [{"role": "system", "content": "x" * 500}]
         with patch("agent.MAX_PROMPT_CHARS", 100):

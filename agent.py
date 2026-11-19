@@ -30,6 +30,8 @@ ALL_ACTIONS = {item["properties"]["action"]["const"] for item in SCHEMA["oneOf"]
 # Keep a cacheable prefix without allowing unlimited context growth.
 # This reserves space for a response in the model's 16K-token context.
 MAX_PROMPT_CHARS = 32000
+# After losing the cached prefix, leave room for several incremental turns.
+COMPACT_TARGET_CHARS = 12000
 
 
 def bounded_messages(prefix, history, progress):
@@ -43,6 +45,13 @@ def bounded_messages(prefix, history, progress):
     def size():
         return sum(len(item["content"]) for item in prefix + history + [progress])
     dropped = 0
+    if size() <= MAX_PROMPT_CHARS:
+        return prefix + history + [progress], 0
+    # Keep the latest tool result whenever it fits. Rebuilding a nearly full
+    # context after every eviction can exhaust the board's request timeout.
+    while len(history) > 3 and size() > COMPACT_TARGET_CHARS:
+        del history[:3]
+        dropped += 1
     while history and size() > MAX_PROMPT_CHARS:
         del history[:3]
         dropped += 1
