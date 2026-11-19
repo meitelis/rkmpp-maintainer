@@ -41,7 +41,8 @@ def sync_contracts(project, root, old, new, old_go=None, new_go=None):
                   "scripts/test-v11-deploy-preflight.sh", "scripts/test-v11-rkmpp.sh",
                   ".github/workflows/check.yml", ".github/workflows/v11-hardware-image.yml"]
     else:
-        names += ["Dockerfile.rkmpp", "scripts/build.sh"]
+        names += ["Dockerfile.rkmpp", "scripts/build.sh", "scripts/deploy.sh",
+                  "compose.override.example.yml", ".github/workflows/check.yml"]
     for name in names:
         path = root / name
         if not path.exists():
@@ -80,6 +81,19 @@ def sync_contracts(project, root, old, new, old_go=None, new_go=None):
                     " ".join(dict.fromkeys([v for v in m[1].split() if v != new] + [old])) + "; do", updated, flags=re.M)
         else:
             updated = re.sub(r"rkmpp-" + re.escape(old) + r"(?=-r\d)", "rkmpp-" + new, updated)
+            if name == "Dockerfile.rkmpp":
+                for key in ("org.opencontainers.image.version", "cc.immich-rkmpp.upstream-version"):
+                    updated = updated.replace(f'{key}="{old}"', f'{key}="{new}"')
+                    updated = updated.replace(f'{key}="{old}-rkmpp-', f'{key}="{new}-rkmpp-')
+            if name == "scripts/deploy.sh":
+                # Only the same-version guards describe the current release.
+                updated = "".join(line.replace(old, new) if line.startswith(('case "$old_version" in ', '[ "$version" = '))
+                                  else line for line in updated.splitlines(keepends=True))
+            if name == "compose.override.example.yml":
+                updated = updated.replace("existing Immich v" + old + " stack", "existing Immich v" + new + " stack")
+            if name == "README.md":
+                for template in ("existing, working Immich {} Compose", "same-version {} image replacements"):
+                    updated = updated.replace(template.format(old), template.format(new))
         if updated != text:
             path.write_text(updated)
     if project == "memories":
@@ -109,6 +123,40 @@ def sync_contracts(project, root, old, new, old_go=None, new_go=None):
                     count = 6 * len(re.findall(r"'[^']+'", supported)) + len(values)
                     updated = re.sub(r"listener: \d+ cases", f"listener: {count} cases", updated)
             path.write_text(updated)
+
+
+def verify_immich_contracts(root, target):
+    """Cross-check the build tag against its consumers before starting the model."""
+    root = Path(root)
+
+    def content(path):
+        file = root / path
+        if file.is_symlink() or not file.is_file():
+            raise RuntimeError("Missing or unsafe Immich release contract: " + path)
+        return file.read_text()
+
+    build = content("scripts/build.sh")
+    match = re.search(r"^image=(local/immich-server:rkmpp-" + re.escape(target) + r"-r\d+[\w.-]*)$", build, re.M)
+    if not match:
+        raise RuntimeError("Unexpected Immich image tag in scripts/build.sh")
+    tag = match[1]
+    workflow = content(".github/workflows/check.yml")
+    # This workflow builds the default tag. Check the actual test invocation.
+    if not re.search(r'^ +run: sh scripts/build\.sh --source-dir "[^"\n]+"$', workflow, re.M) or not re.search(
+        r"^ +" + re.escape(tag) + r" \\\n +--test tests/playback-fragments\.test\.mjs$", workflow, re.M
+    ):
+        raise RuntimeError("Immich CI must build and run fragment tests on " + tag)
+    required = {
+        "compose.override.example.yml": ["image: " + tag],
+        "Dockerfile.rkmpp": [f'cc.immich-rkmpp.upstream-version="{target}"',
+                             f'org.opencontainers.image.version="{target}-rkmpp-' + tag.split(target + "-", 1)[1] + '"'],
+        "scripts/deploy.sh": [f'case "$old_version" in {target}|v{target}|{target}-rkmpp-*)',
+                              f'[ "$version" = {target} ]'],
+    }
+    for path, values in required.items():
+        text = content(path)
+        if any(value not in text for value in values):
+            raise RuntimeError("Immich release contract disagrees with target in " + path)
 
 
 def reconcile(project, root, upstream, old, new, old_ref, new_ref):
@@ -186,6 +234,7 @@ def reconcile(project, root, upstream, old, new, old_ref, new_ref):
             raise RuntimeError("Unsupported upstream package manager; manual review needed")
         text = re.sub(r"pnpm@\d+\.\d+\.\d+", manager, text)
         dockerfile.write_text(text)
+        verify_immich_contracts(root, new)
         prepare = root / "scripts/prepare-source.mjs"
         prepare.write_text(re.sub(r"pnpm@\d+\.\d+\.\d+", manager, prepare.read_text()))
     return notes, changes
