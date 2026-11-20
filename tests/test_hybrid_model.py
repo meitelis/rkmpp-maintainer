@@ -32,7 +32,7 @@ class HybridModelTests(unittest.TestCase):
         self.assertIn("/dev/dri/renderD129:/dev/dri/renderD129", docker)
         self.assertIn("nofile=262144:262144", docker)
         self.assertEqual(model, ["-ngl", "2", "--no-kv-offload"])
-        for invalid in [0, 5, True, "2"]:
+        for invalid in [-1, 5, True, "2"]:
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     hybrid_docker_options({**runtime, "npu_layers": invalid})
@@ -40,6 +40,19 @@ class HybridModelTests(unittest.TestCase):
             hybrid_docker_options({**runtime, "npu_device": "/dev/dri/../mem"})
         with self.assertRaises(ValueError):
             hybrid_docker_options({**runtime, "no_swap": False})
+
+    def test_cpu_control_uses_same_q4_model_backend_and_only_disables_offload(self):
+        config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        npu_model, npu_runtime, _ = settings(config, "hybrid")
+        cpu_model, cpu_runtime, _ = settings(config, "hybrid_cpu")
+        self.assertEqual(cpu_model, npu_model)
+        self.assertEqual(cpu_runtime["backend"], "rknpu2")
+        self.assertEqual(cpu_runtime["memory"], npu_runtime["memory"])
+        self.assertEqual(cpu_runtime["context_size"], npu_runtime["context_size"])
+        self.assertEqual(cpu_runtime["npu_layers"], 0)
+        device_opts, flags = hybrid_docker_options(cpu_runtime)
+        self.assertEqual(device_opts, [])
+        self.assertEqual(flags, ["-ngl", "0", "--no-kv-offload"])
 
     def test_reuse_requires_correct_model_bytes_and_sha(self):
         with tempfile.TemporaryDirectory() as directory:
