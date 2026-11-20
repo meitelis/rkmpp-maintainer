@@ -192,7 +192,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
                                               "attempt": attempt + 1}
                     # The model edits the candidate. It is unloaded before builds and hardware tests.
-                    with docker.model(smoke=model_profile == "smoke",
+                    with docker.model(profile=model_profile,
                                       metrics_path=job / f"model-runtime-{attempt}.json") as endpoint:
                         record_runtime(job, docker)
                         review = run_agent(root, upstream,
@@ -442,7 +442,7 @@ def smoke(config, workspace, model_profile="smoke"):
                     "Use action upstream with path go-vod/http_options.py for the reference. "
                     "Do not change tests. Finish only after completing the repair; otherwise report a blocker.")
             phase(job, result, "model-repair")
-            with docker.model(smoke=model_profile == "smoke", metrics_path=job / "model-runtime.json") as endpoint:
+            with docker.model(profile=model_profile, metrics_path=job / "model-runtime.json") as endpoint:
                 record_runtime(job, docker)
                 review = run_agent(root, upstream, task,
                     lambda _: "".join(difflib.unified_diff(BROKEN.splitlines(True), REFERENCE.splitlines(True))),
@@ -600,7 +600,7 @@ def main():
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
-    parser.add_argument("--model-profile", choices=["coding", "smoke"])
+    parser.add_argument("--model-profile", choices=["coding", "smoke", "hybrid"])
     parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
     parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
@@ -612,7 +612,10 @@ def main():
         print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
         while True:
             time.sleep(60)
-    profile = args.model_profile or ("smoke" if args.action == "smoke" else "coding")
+    profile = args.model_profile or os.environ.get("MODEL_PROFILE") or (
+        "smoke" if args.action == "smoke" else "coding")
+    if profile not in {"smoke", "coding", "hybrid"}:
+        parser.error("Invalid MODEL_PROFILE; expected coding, smoke or hybrid")
     if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
         # Reap abandoned owned workloads before judging whether enough RAM is idle.
         with locked(workspace / "maintainer.lock"):
