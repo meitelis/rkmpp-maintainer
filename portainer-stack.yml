@@ -58,6 +58,8 @@ services:
       # Never pass this token to builder/model/verification containers.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MODEL_ENDPOINT: ${MODEL_ENDPOINT:-}
+      # Optional experimental acceleration: set hybrid after on-board validation.
+      MODEL_PROFILE: ${MODEL_PROFILE:-}
     # The Memories on-board matrix enumerates /dev nodes in the controller.
     # Hardware is exercised only inside the isolated Docker builder.
     devices:
