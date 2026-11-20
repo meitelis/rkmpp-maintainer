@@ -72,15 +72,15 @@ class HybridModelTests(unittest.TestCase):
             def command(args, **kwargs):
                 commands.append(args)
                 if args[:2] == ["docker", "exec"]:
-                    return "memory.max=19327352832\\nmemory.swap.max=0\\n"
+                    return "memory.max=19327352832\nmemory.swap.max=0\n"
                 if args[:2] == ["docker", "run"] and "--list-devices" in args:
                     return "Available devices: RKNPU: Rockchip NPU"
                 return ""
-            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
-                 patch.object(docker, "verify"), \\
-                 patch("runner.require_model_memory", return_value={}), \\
-                 patch("runner.download_model", return_value=Path(temp)/"models/q4.gguf"), \\
-                 patch("runner.command", side_effect=command), \\
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
+                 patch.object(docker, "verify"), \
+                 patch("runner.require_model_memory", return_value={}), \
+                 patch("runner.download_model", return_value=Path(temp)/"models/q4.gguf"), \
+                 patch("runner.command", side_effect=command), \
                  patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value = SimpleNamespace(status=200)
                 with docker.model(profile="hybrid") as endpoint:
@@ -108,10 +108,10 @@ class HybridModelTests(unittest.TestCase):
             def run_command(args, **kwargs):
                 commands.append(args)
                 return "Available devices: CPU" if "--list-devices" in args else ""
-            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
-                 patch.object(Docker, "verify"), \\
-                 patch("runner.require_model_memory", return_value={}), \\
-                 patch("runner.download_model", return_value=Path(temp)/"q4.gguf"), \\
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
+                 patch.object(Docker, "verify"), \
+                 patch("runner.require_model_memory", return_value={}), \
+                 patch("runner.download_model", return_value=Path(temp)/"q4.gguf"), \
                  patch("runner.command", side_effect=run_command):
                 with self.assertRaisesRegex(RuntimeError, "RKNPU backend/device not detected"):
                     with Docker(conf,temp).model(profile="hybrid"): pass
