@@ -73,6 +73,8 @@ Disable image re-pulling for the locally built maintainer image. It is `local/rk
 
 Deploy the stack. Its control should show **Total**, with a healthy builder and running maintainer. No host Docker socket or host ports are mounted/published by this stack. The builder remains privileged, as in the tested prototype, and is intended for these trusted source repositories.
 
+**RK3588 CPU + NPU (opt-in):** An experimental `hybrid` profile uses pinned Qwen3-Coder Q4_0 with two RKNPU-offloaded layers and the KV cache on CPU, within the **existing** Docker builder. The default `coding` CPU profile is unchanged. See [the exact setup, tests and restrictions](RKNPU-HYBRID.md); no NPU speedup or real upgrade success is claimed until the board passes the paired benchmark.
+
 ## Run tests from Portainer
 
 With `MAINTAINER_ACTION=idle`, open the maintainer container's **Console**, select `/bin/sh`, and connect. The idle service does not own the job lock, so Console jobs can run without fighting a background monitor.
@@ -113,7 +115,7 @@ Successful upgrade jobs now report **`status: built`**, **`review_status: pendin
 
 Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
 
-Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU operation remains unvalidated.
+Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU hardware matrix work has been observed in standalone board experiments, but the maintainer's hybrid model workload remains unqualified.
 
 ## Overnight admission
 
