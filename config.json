@@ -68,7 +68,7 @@
       }
     },
     "hybrid": {
-      "url": "https://huggingface.co/n00b001/Qwen3-Coder-30B-A3B-Instruct-Q4_0-GGUF/resolve/6f416a66beacce7c45fce4a663b2a7d5ad00e0c0/Qwen3-Coder-30B-A3B-Instruct-Q4_0.gguf",
+      "url": "https://huggingface.co/n00b001/Qwen3-Coder-30B-A3B-Instruct-Q4_0-GGUF/resolve/6f416a66beacce7c45fce4a663b2a7d5ad00e0c0/qwen3-coder-30b-a3b-instruct-q4_0.gguf",
       "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_0.gguf",
       "sha256": "cb55db3283b0b3790c8bf0b976ce0b09f64d182611e89703186c383c090825c4",
       "bytes": 17304492352,
