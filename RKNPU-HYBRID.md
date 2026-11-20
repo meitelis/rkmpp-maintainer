@@ -39,9 +39,11 @@ system-wide swap/zram or the builder ceiling.
    `rknpu2`, `npu_layers_requested=2`, and device detection. Independently
    check actual RKNPU kernel-load samples during inference and model logs for
    hardware matmuls. **Device detection is not proof of NPU computation.**
-4. Confirm the protected source-repair tests pass and run a paired CPU coding
-   profile under identical cache/temperature conditions. Measure time to
-   correct repair, not just a four-token arithmetic prompt. Only then consider
+4. Confirm protected source-repair tests pass. Then test the same Q4_0 GGUF,
+   same backend binary, context and workload on CPU only:
+   `python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid_cpu --ignore-window`
+   The `hybrid_cpu` control uses `-ngl 0` with no NPU device. Compare
+   completed wall-clock time and correctness. Never run both simultaneously. Only then consider
    selecting `MODEL_PROFILE=hybrid` for ordinary watcher runs.
 
 **Known limitation:** The Q4_0 hybrid model, usable context length,
