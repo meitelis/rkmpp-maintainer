@@ -3,10 +3,13 @@ import copy
 
 
 def settings(config, name="coding"):
-    if name not in {"coding", "smoke", "hybrid"}:
+    if name not in {"coding", "smoke", "hybrid", "hybrid_cpu"}:
         raise ValueError("Unknown model profile")
-    spec = copy.deepcopy(config.get("models", {}).get(name, {}))
+    spec = copy.deepcopy(config.get("models", {}).get("hybrid" if name == "hybrid_cpu" else name, {}))
     runtime = {**config.get("model_runtime", {}), **spec.pop("runtime", {})}
+    if name == "hybrid_cpu":
+        # Exact same GGUF and RKNPU2 binary; CPU control changes only -ngl.
+        runtime["npu_layers"] = 0
     generation = copy.deepcopy(config.get("generation", {}))
     override = spec.pop("generation", {})
     chat = {**generation.get("chat_template_kwargs", {}), **override.get("chat_template_kwargs", {})}
@@ -65,8 +68,10 @@ def hybrid_docker_options(runtime):
     if runtime.get("backend") != "rknpu2":
         return [], []
     layers = runtime.get("npu_layers")
-    if type(layers) is not int or not 1 <= layers <= 4:
-        raise ValueError("Hybrid NPU layers must be an integer from 1 to 4 until hardware qualified")
+    if type(layers) is not int or not 0 <= layers <= 4:
+        raise ValueError("RKNPU2 layers must be an integer from 0 to 4 until hardware qualified")
+    if layers == 0:
+        return [], ["-ngl", "0", "--no-kv-offload"]
     device = runtime.get("npu_device")
     if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\d+", device) is None:
         raise ValueError("Hybrid model requires an explicit DRM render device")
