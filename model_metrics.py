@@ -65,9 +65,10 @@ def require_enforced_memory_limits(readings, requested_memory, no_swap):
             kind = "v2"
         elif "memory/memory.limit_in_bytes" in readings:  # cgroup v1
             actual = int(readings["memory/memory.limit_in_bytes"])
-            combined = int(readings["memory/memory.memsw.limit_in_bytes"])
-            swap = str(combined)
-            swap_ok = combined <= actual
+            combined_raw = readings.get("memory/memory.memsw.limit_in_bytes")
+            combined = int(combined_raw) if combined_raw is not None else None
+            swap = "unavailable" if combined is None else str(combined)
+            swap_ok = combined is not None and combined <= actual
             kind = "v1"
         else:
             raise ValueError("no readable memory cgroup limit")
