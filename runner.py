@@ -124,11 +124,12 @@ class Docker:
                 source = Path(__file__).resolve().parent
                 command(["docker", "build", "-f", str(source / "Dockerfile.rknpu2"),
                          "-t", image, str(source)], timeout=3600)
-            detected = command([
-                "docker", "run", "--rm", "--network", "none", "--device",
-                runtime["npu_device"], image, "--list-devices"], timeout=60)
-            if not re.search(r"(?i)\bRKNPU\b", detected):
-                raise RuntimeError("RKNPU backend/device not detected; refusing CPU-only fallback")
+            if runtime.get("npu_layers", 0) > 0:
+                detected = command([
+                    "docker", "run", "--rm", "--network", "none", "--device",
+                    runtime["npu_device"], image, "--list-devices"], timeout=60)
+                if not re.search(r"(?i)\bRKNPU\b", detected):
+                    raise RuntimeError("RKNPU backend/device not detected; refusing CPU-only fallback")
         else:
             command(["docker", "pull", image], timeout=600)
         endpoint = "http://builder:8080"
@@ -172,7 +173,7 @@ class Docker:
                 "model_sha256":spec["sha256"], "filename":spec["filename"],
                 "backend": "rknpu2" if hybrid else "cpu",
                 "npu_layers_requested": runtime["npu_layers"] if hybrid else 0,
-                "npu_device_detected": bool(hybrid),
+                "npu_device_detected": bool(hybrid and runtime["npu_layers"] > 0),
                 "npu_execution_verified": False,
                 **memory_preflight, **enforced_limits}
             yield endpoint
