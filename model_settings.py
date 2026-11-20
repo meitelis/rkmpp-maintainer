@@ -68,7 +68,7 @@ def hybrid_docker_options(runtime):
     if type(layers) is not int or not 1 <= layers <= 4:
         raise ValueError("Hybrid NPU layers must be an integer from 1 to 4 until hardware qualified")
     device = runtime.get("npu_device")
-    if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\\d+", device) is None:
+    if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\d+", device) is None:
         raise ValueError("Hybrid model requires an explicit DRM render device")
     if not runtime.get("no_swap"):
         raise ValueError("Hybrid model requires the verified no-swap memory profile")
