@@ -22,6 +22,14 @@ jobs:
           docker compose config --quiet
           docker compose -f portainer-stack.yml config --quiet
           bash -n scripts/migrate-to-portainer.sh
+  rknpu-image:
+    needs: validate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Compile pinned RKNPU2 llama-server on ARM64 (no NPU required)
+        run: docker build -f Dockerfile.rknpu2 -t local/rkmpp-llama-rknpu2:712f4de .
   smoke:
     needs: validate
     runs-on: ubuntu-24.04-arm
