@@ -21,7 +21,7 @@ class CoreTests(unittest.TestCase):
             with patch.dict(os.environ,{"MODEL_ENDPOINT":""}), patch.object(docker,"verify"), \
                  patch("runner.require_model_memory",return_value={}), \
                  patch("runner.download_model",return_value=Path(temp)/"models/large.gguf"), \
-                 patch("runner.command",return_value="") as invoke, patch("runner.CgroupSampler",return_value=SimpleNamespace(start=lambda:None,stop=lambda:None,last={},samples=0,errors=[])), \
+                 patch("runner.command", side_effect=lambda args, **kwargs: "memory.max=19327352832\nmemory.swap.max=0\n" if args[:2] == ["docker", "exec"] else "") as invoke, patch("runner.CgroupSampler",return_value=SimpleNamespace(start=lambda:None,stop=lambda:None,last={},samples=0,errors=[])), \
                  patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value=SimpleNamespace(status=200)
                 with docker.model(metrics_path=Path(temp)/"job/model-runtime.json"): pass
@@ -77,7 +77,7 @@ class CoreTests(unittest.TestCase):
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), patch.object(docker, "verify"), \
                  patch("runner.require_model_memory",return_value={}), \
                  patch("runner.download_model", return_value=Path(temp) / "models/model.gguf"), \
-                 patch("runner.command", side_effect=lambda args, **kwargs: "model-id" if args[:3] == ["docker", "ps", "-aq"] else "") as invoke, \
+                 patch("runner.command", side_effect=lambda args, **kwargs: ("model-id" if args[:3] == ["docker", "ps", "-aq"] else "memory.max=12884901888\nmemory.swap.max=0\n" if args[:2] == ["docker", "exec"] else "")) as invoke, \
                  patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value = SimpleNamespace(status=200)
                 with docker.model() as endpoint:
