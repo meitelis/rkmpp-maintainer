@@ -38,7 +38,7 @@
       "sha256": "ddad34d487a85c5a5872b422a15b1f3db196c7912ecd939e7e1ef373cbc7ef29",
       "bytes": 14583005504,
       "runtime": {
-        "memory": "19g",
+        "memory": "17g",
         "context_size": 16384,
         "threads": 4,
         "threads_batch": 4,

@@ -4,10 +4,10 @@ services:
   builder:
     image: docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
     privileged: true
-    # Keep 2 GiB above the coding model's own 19 GiB ceiling for the
-    # isolated daemon and worker overhead; host admission still reserves RAM.
-    mem_limit: 21g
-    memswap_limit: 21g
+    # Keep 2 GiB above the coding model's 17 GiB ceiling for daemon
+    # overhead; the host admission check independently reserves 1 GiB.
+    mem_limit: 19g
+    memswap_limit: 19g
     cpus: 6
     cpu_shares: 128
     restart: unless-stopped

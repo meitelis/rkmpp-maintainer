@@ -14,7 +14,7 @@ Required checks for this revision:
 
 Candidate qualification must identify exactly which revision and configuration passed. Changes to the controller, model, runtime, checks or application integration require the relevant checks again. Unsupported layouts, unresolved conflicts, budget exhaustion, unverified external endpoints and failed checks retain failure evidence and prevent candidate approval.
 
-The implementation records a six-hour whole-job budget, a 2 GiB free-space reserve, build/export preflights, per-operation limits, timestamped tool outcomes and complete paginated observations. The builder has a 21 GiB ceiling and six-CPU ceiling in the production Portainer stack. Images, models, job evidence and production services are preserved.
+The implementation records a six-hour whole-job budget, a 2 GiB free-space reserve, build/export preflights, per-operation limits, timestamped tool outcomes and complete paginated observations. The builder has a 19 GiB ceiling and six-CPU ceiling in the production Portainer stack. Images, models, job evidence and production services are preserved.
 
 No qualification result is asserted in this document until the corresponding evidence is attached.
 

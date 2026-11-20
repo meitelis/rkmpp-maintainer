@@ -13,7 +13,7 @@ from pathlib import Path
 from core import command, download_model, save_json
 from limits import bounded_timeout, check_budget, cleanup_budget, require_space
 from model_settings import require_model_memory, settings
-from model_metrics import CGROUP_COMMAND, CgroupSampler
+from model_metrics import CGROUP_COMMAND, CgroupSampler, require_enforced_memory_limits
 
 PHP_LINT_CHECK = "find memories_rkmpp_v11 -name '*.php' -exec sh -ec 'for f do php -l \"$f\" || exit; done' sh {} + && php scripts/test-v11-compat.php"
 
@@ -123,6 +123,13 @@ class Docker:
                  "--threads", threads, "--parallel", "1", "--jinja",
                  "--reasoning-format", "deepseek",
                  "--reasoning-budget", str(runtime.get("reasoning_budget", 1024)), *model_options], timeout=60)
+            # Docker's requested limits are not evidence that cgroup v1
+            # actually enforces memory+swap. Check the live model container.
+            cgroup_text = command(["docker", "exec", name, "sh", "-c",
+                                   CGROUP_COMMAND], timeout=15)
+            cgroup_values = dict(line.split("=", 1) for line in cgroup_text.splitlines() if "=" in line)
+            enforced_limits = require_enforced_memory_limits(
+                cgroup_values, runtime.get("memory", "12g"), runtime.get("no_swap", False))
             if metrics_path:
                 sampler = CgroupSampler(lambda:command(["docker","exec",name,"sh","-c",CGROUP_COMMAND],timeout=5),
                                         metrics_path,runtime)
@@ -142,7 +149,7 @@ class Docker:
                 raise RuntimeError("Local model did not become ready in ten minutes")
             self.model_evidence = {"container_image_id":command(
                 ["docker", "inspect", name, "--format", "{{.Image}}"], timeout=30),
-                "model_sha256":spec["sha256"], "filename":spec["filename"], **memory_preflight}
+                "model_sha256":spec["sha256"], "filename":spec["filename"], **memory_preflight, **enforced_limits}
             yield endpoint
         finally:
             try:
