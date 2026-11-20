@@ -32,6 +32,14 @@ class ModelMetricsTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "RAM limit not enforced"):
             require_enforced_memory_limits(good, "16g", True)
 
+    def test_cgroup_v1_without_memsw_only_allows_ram_only_workload(self):
+        values = {"memory/memory.limit_in_bytes": str(12 * 1024**3)}
+        evidence = require_enforced_memory_limits(values, "12g", False)
+        self.assertEqual(evidence["effective_memory_bytes"], 12 * 1024**3)
+        self.assertFalse(evidence["no_swap_enforced"])
+        with self.assertRaisesRegex(RuntimeError, "no-swap limit not enforced"):
+            require_enforced_memory_limits(values, "12g", True)
+
     def test_cgroup_v2_swap_zero_and_missing_fields(self):
         self.assertTrue(require_enforced_memory_limits(
             {"memory.max": str(17*1024**3), "memory.swap.max": "0"}, "17g", True
