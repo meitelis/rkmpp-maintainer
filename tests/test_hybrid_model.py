@@ -76,13 +76,13 @@ class HybridModelTests(unittest.TestCase):
                 if args[:2] == ["docker", "run"] and "--list-devices" in args:
                     return "Available devices: CPU"
                 if args[:2] == ["docker", "exec"]:
-                    return "memory.max=19327352832\\nmemory.swap.max=0\\n"
+                    return "memory.max=19327352832\nmemory.swap.max=0\n"
                 return ""
-            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
-                 patch.object(Docker, "verify"), \\
-                 patch("runner.require_model_memory", return_value={}), \\
-                 patch("runner.download_model", return_value=Path(temp)/"models/q4.gguf"), \\
-                 patch("runner.command", side_effect=run_command), \\
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
+                 patch.object(Docker, "verify"), \
+                 patch("runner.require_model_memory", return_value={}), \
+                 patch("runner.download_model", return_value=Path(temp)/"models/q4.gguf"), \
+                 patch("runner.command", side_effect=run_command), \
                  patch("runner.urllib.request.urlopen") as health:
                 health.return_value.__enter__.return_value = SimpleNamespace(status=200)
                 with Docker(conf, temp).model(profile="hybrid_cpu") as endpoint:
@@ -113,11 +113,11 @@ class HybridModelTests(unittest.TestCase):
                 if "--list-devices" in args:
                     return "Available devices: RKNPU"
                 return ""
-            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
-                 patch.object(Docker, "verify"), \\
-                 patch("runner.require_model_memory", return_value={}), \\
-                 patch("runner.download_model") as download, \\
-                 patch("runner.validated_existing_model") as existing, \\
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
+                 patch.object(Docker, "verify"), \
+                 patch("runner.require_model_memory", return_value={}), \
+                 patch("runner.download_model") as download, \
+                 patch("runner.validated_existing_model") as existing, \
                  patch("runner.command", side_effect=run_command):
                 with self.assertRaisesRegex(RuntimeError, "CPU control image contains RKNPU"):
                     with Docker(conf, temp).model(profile="hybrid_cpu"): pass
