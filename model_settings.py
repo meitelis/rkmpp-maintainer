@@ -22,6 +22,25 @@ def settings(config, name="coding"):
     return spec, runtime, generation
 
 
+def with_smoke_npu_layers(config, action, profile, layers):
+    """Override only a manual hybrid smoke, leaving normal models untouched.
+
+    Keep the original 0..4 backend safety bound. Higher counts need real board
+    memory and correctness qualification before expanding this experiment.
+    """
+    if layers is None:
+        return config
+    if action != "smoke" or profile != "hybrid":
+        raise ValueError("--npu-layers is only allowed for smoke --model-profile hybrid")
+    if type(layers) is not int or layers not in (2, 3, 4):
+        raise ValueError("Experimental NPU layer count must be 2, 3 or 4")
+    if "hybrid" not in config.get("models", {}):
+        raise ValueError("Missing hybrid model configuration")
+    updated = copy.deepcopy(config)
+    updated["models"]["hybrid"].setdefault("runtime", {})["npu_layers"] = layers
+    return updated
+
+
 def memory_bytes(value):
     import re
     match = re.fullmatch(r"(\d+)([kmg])?", str(value).lower())
