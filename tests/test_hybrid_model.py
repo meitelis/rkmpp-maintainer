@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from model_settings import hybrid_docker_options, settings, validated_existing_model, with_smoke_npu_layers
 from runner import Docker
+from maintainer import inspect_moe_dispatch_log
 
 
 class HybridModelTests(unittest.TestCase):
@@ -86,6 +87,22 @@ class HybridModelTests(unittest.TestCase):
             with_smoke_npu_layers(config, "smoke", "hybrid", 1, moe=1)
         with self.assertRaisesRegex(ValueError, "requires at least one"):
             hybrid_docker_options({**runtime, "npu_layers": 0})
+
+    def test_moe_logs_differentiate_dispatch_evidence_from_requested_flag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "model.log"
+            self.assertEqual(inspect_moe_dispatch_log(path),
+                             {"expert_batch_path_observed": False,
+                              "expert_batch_log_lines": 0, "model_log_available": False})
+            path.write_text("loaded RKNPU backend\\nno expert dispatch\\n")
+            self.assertFalse(inspect_moe_dispatch_log(path)["expert_batch_path_observed"])
+            path.write_text("[moe-batch] K=1 N=2\\n"
+                            "other logging\\n"
+                            "[moe-batch] K=1 N=2\\n")
+            evidence = inspect_moe_dispatch_log(path)
+            self.assertTrue(evidence["expert_batch_path_observed"])
+            self.assertEqual(evidence["expert_batch_log_lines"], 2)
+            self.assertTrue(evidence["model_log_available"])
 
     def test_hybrid_options_are_bounded_and_explicit(self):
         runtime = {"backend": "rknpu2", "npu_layers": 2,
