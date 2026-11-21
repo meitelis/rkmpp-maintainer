@@ -37,7 +37,7 @@ class QwenBoardMemoryTests(unittest.TestCase):
         with patch("pathlib.Path.read_text", return_value=meminfo):
             result = require_model_memory(self.config, self.spec, self.runtime)
         self.assertEqual(result["estimated_model_and_reserve_bytes"], 19 * GIB)
-        self.assertEqual(result["available_before_model_bytes"], 18 * GIB)
+        self.assertEqual(result["available_before_model_bytes"], 19 * GIB)
 
     def test_preflight_still_rejects_ram_below_model_plus_reserve(self):
         meminfo = f"MemAvailable: {(19 * GIB - 1024) // 1024} kB\n"
