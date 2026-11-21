@@ -3,11 +3,19 @@ import copy
 
 
 def settings(config, name="coding"):
-    if name not in {"coding", "smoke", "hybrid", "hybrid_cpu"}:
+    if name not in {"coding", "smoke", "hybrid", "hybrid_cpu", "moe", "moe_cpu"}:
         raise ValueError("Unknown model profile")
-    spec = copy.deepcopy(config.get("models", {}).get("hybrid" if name == "hybrid_cpu" else name, {}))
+    # Both variants share the exact same Qwen Q4_0 model, sampling and context.
+    # The only variable in an A/B run is NPU-enabled dense matmuls.
+    parent = "hybrid" if name in {"hybrid_cpu", "moe", "moe_cpu"} else name
+    spec = copy.deepcopy(config.get("models", {}).get(parent, {}))
     runtime = {**config.get("model_runtime", {}), **spec.pop("runtime", {})}
-    if name == "hybrid_cpu":
+    if name in {"moe", "moe_cpu"}:
+        # Upstream's documented RK3588 approach: mmap experts on CPU, accelerate
+        # eligible dense operations; never requantize all expert weights to NPU.
+        runtime["moe_strategy"] = "resident_cpu_experts"
+        runtime["npu_layers"] = 99 if name == "moe" else 0
+    if name in {"hybrid_cpu", "moe_cpu"}:
         # Use the identical pinned fork and GGUF, but compile without RKNN.
         # The RKNPU-enabled binary still initializes its device with -ngl 0,
         # so disabling layer offload alone is NOT a valid CPU baseline.
@@ -71,8 +79,15 @@ def hybrid_docker_options(runtime):
     if runtime.get("backend") != "rknpu2":
         return [], []
     layers = runtime.get("npu_layers")
-    if type(layers) is not int or not 0 <= layers <= 4:
-        raise ValueError("RKNPU2 layers must be an integer from 0 to 4 until hardware qualified")
+    # 99 is the pinned backend's documented MoE CPU-expert configuration.
+    # It is never available to the old two-layer experimental hybrid profile.
+    moe = runtime.get("moe_strategy") == "resident_cpu_experts"
+    if runtime.get("moe_strategy") not in {None, "resident_cpu_experts"}:
+        raise ValueError("Unknown MoE execution strategy")
+    if type(layers) is not int or not ((0 <= layers <= 4) or (moe and layers == 99)):
+        raise ValueError("RKNPU2 layer request outside the qualified profile bounds")
+    if moe and layers != 99:
+        raise ValueError("Resident-expert NPU profile requires the fixed 99-layer request")
     if not runtime.get("no_swap"):
         raise ValueError("Hybrid model requires the verified no-swap memory profile")
     if layers == 0:
