@@ -13,6 +13,7 @@ def settings(config, name="coding"):
         # so disabling layer offload alone is NOT a valid CPU baseline.
         runtime["backend"] = "cpu"
         runtime["npu_layers"] = 0
+        runtime.pop("npu_moe", None)
     generation = copy.deepcopy(config.get("generation", {}))
     override = spec.pop("generation", {})
     chat = {**generation.get("chat_template_kwargs", {}), **override.get("chat_template_kwargs", {})}
