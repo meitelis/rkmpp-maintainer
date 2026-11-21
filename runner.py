@@ -125,11 +125,25 @@ class Docker:
                 command(["docker", "build", "-f", str(source / "Dockerfile.rknpu2"),
                          "-t", image, str(source)], timeout=3600)
             if runtime.get("npu_layers", 0) > 0:
-                detected = command([
-                    "docker", "run", "--rm", "--network", "none", "--device",
-                    runtime["npu_device"], image, "--list-devices"], timeout=60)
-                if not re.search(r"(?i)\bRKNPU\b", detected):
-                    raise RuntimeError("RKNPU backend/device not detected; refusing CPU-only fallback")
+                # --list-devices only proves that the backend was compiled.
+                # Exercise the same device+device-tree mounts through RKNN's
+                # matmul context and allocation APIs before reading 17 GB.
+                try:
+                    probe = command([
+                        "docker", "run", "--rm", "--network", "none",
+                        "--memory", "512m", "--memory-swap", "512m",
+                        *npu_docker, "--entrypoint", "/opt/llama/bin/rknpu-probe",
+                        image], timeout=90)
+                except RuntimeError as error:
+                    raise RuntimeError(
+                        "NPU preflight failed before model loading. The nested "
+                        "container cannot initialize RKNN or allocate NPU memory; "
+                        "check its render device and /proc/device-tree/compatible. "
+                        + str(error)) from error
+                if "RKNPU_PROBE_OK" not in probe.splitlines():
+                    raise RuntimeError(
+                        "NPU preflight produced no successful RKNN allocation "
+                        "confirmation; refusing hybrid model startup")
         else:
             command(["docker", "pull", image], timeout=600)
         endpoint = "http://builder:8080"
