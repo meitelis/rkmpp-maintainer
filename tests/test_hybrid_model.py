@@ -135,6 +135,50 @@ class HybridModelTests(unittest.TestCase):
                 download.assert_not_called()
                 existing.assert_not_called()
 
+    def test_default_coding_launches_exact_qualified_q4_cpu_binary_not_generic_llama(self):
+        # The source profile resolves to the exact GGUF used in the board
+        # measurement. Ensure the production *launch* also selects the same
+        # pinned RKNN-disabled executable, without any DRM device passthrough.
+        conf = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        commands = []
+        with tempfile.TemporaryDirectory() as temp:
+            def run_command(args, **kwargs):
+                commands.append(args)
+                if "--list-devices" in args:
+                    return "Available devices: CPU"
+                if args[:2] == ["docker", "exec"]:
+                    return "memory.max=19327352832\nmemory.swap.max=0\n"
+                return ""
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
+                 patch.object(Docker, "verify"), \
+                 patch("runner.require_model_memory", return_value={}), \
+                 patch("runner.validated_existing_model", return_value=Path(temp) / "coder-q4.gguf"), \
+                 patch("runner.download_model") as download, \
+                 patch("runner.command", side_effect=run_command), \
+                 patch("runner.urllib.request.urlopen") as health:
+                health.return_value.__enter__.return_value = SimpleNamespace(status=200)
+                with Docker(conf, temp).model(profile="coding") as endpoint:
+                    self.assertEqual(endpoint, "http://builder:8080")
+                download.assert_not_called()
+        runs = [a for a in commands if a[:3] == ["docker", "run", "-d"]]
+        self.assertEqual(len(runs), 1)
+        run = runs[0]
+        self.assertIn(conf["cpu_control_image"], run)
+        self.assertNotIn(conf["llama_image"], run)
+        self.assertNotIn(conf["rknpu_image"], run)
+        self.assertNotIn("--device", run)
+        self.assertNotIn("--privileged", run)
+        self.assertNotIn("RKNPU_HYBRID=W8A8_STANDARD", run)
+        self.assertEqual(run[run.index("--ctx-size") + 1], "16384")
+        self.assertEqual(run[run.index("-ngl") + 1], "0")
+        self.assertEqual(run[run.index("--memory") + 1], "18g")
+        self.assertEqual(run[run.index("--memory-swap") + 1], "18g")
+        self.assertEqual(run[run.index("--cpuset-cpus") + 1], "4-7")
+        self.assertEqual(run[run.index("--cache-type-k") + 1], "q8_0")
+        self.assertEqual(run[run.index("--cache-type-v") + 1], "q8_0")
+        self.assertFalse(any(x[:2] == ["docker", "pull"] for x in commands))
+        self.assertFalse(any("/rknpu-probe" in " ".join(x) for x in commands))
+
     def test_reuse_requires_correct_model_bytes_and_sha(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
