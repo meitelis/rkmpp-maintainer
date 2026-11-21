@@ -600,7 +600,7 @@ def main():
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
-    parser.add_argument("--model-profile", choices=["coding", "smoke", "hybrid", "hybrid_cpu"])
+    parser.add_argument("--model-profile", choices=["coding", "smoke", "hybrid", "hybrid_cpu", "moe", "moe_cpu"])
     parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
     parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
@@ -614,8 +614,8 @@ def main():
             time.sleep(60)
     profile = args.model_profile or os.environ.get("MODEL_PROFILE") or (
         "smoke" if args.action == "smoke" else "coding")
-    if profile not in {"smoke", "coding", "hybrid", "hybrid_cpu"}:
-        parser.error("Invalid MODEL_PROFILE; expected coding, smoke, hybrid or hybrid_cpu")
+    if profile not in {"smoke", "coding", "hybrid", "hybrid_cpu", "moe", "moe_cpu"}:
+        parser.error("Invalid MODEL_PROFILE; expected coding, smoke, hybrid, hybrid_cpu, moe or moe_cpu")
     if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
         # Reap abandoned owned workloads before judging whether enough RAM is idle.
         with locked(workspace / "maintainer.lock"):
