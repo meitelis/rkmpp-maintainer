@@ -12,13 +12,22 @@ Only `Q4_0` was selected because the backend's NPU matmuls do not support
 Q3_K_L. The 17 GiB CPU coding model is not silently substituted.
 
 The **same** isolated Docker builder compiles `Dockerfile.rknpu2` once if its
-image is absent, launches a **temporary** model process with
-`--device /dev/dri/renderD129`, requests **two NPU layers** with
+image is absent. Before loading the ~17 GB Qwen model, it launches a small
+temporary RKNN probe using the **same** `/dev/dri/renderD129` device mapping
+and read-only Rockchip SoC device-tree compatibility file at
+`/proc/device-tree/compatible`. The probe must create an RKNN matmul context
+**and allocate actual NPU tensor memory**. This replaces the previous
+`--list-devices` check, which incorrectly reported success when the
+runtime could not open the NPU driver. A failed probe aborts quickly with a
+specific error rather than failing after the entire model load.
+
+Only after the probe passes does it launch the model with
+`--device /dev/dri/renderD129`, requesting **two NPU layers** with
 `-ngl 2 --no-kv-offload`, and pins four A76 cores. It applies a
 262,144 file-descriptor limit to avoid the previously observed RKNN fd
 exhaustion. Docker enforces **18 GiB combined RAM+swap** for the model inside
 the existing **19 GiB** isolated builder and verifies live cgroup limits.
-A missing NPU stops the hybrid request; it never silently claims acceleration.
+An inaccessible NPU stops the hybrid request; successful device enumeration alone is not considered proof of NPU availability.
 CPU mode can always be selected again without rebuilding the stack.
 
 If present, `/workspace/experiments/coder-rknpu2-20261119/coder-q4.gguf` is
@@ -53,3 +62,20 @@ qualified in the live maintainer**. The first on-board test may hit the
 raising the nested limit or compromising your other services.
 The on-board model's cgroup settings must be checked separately even though
 the previously tested lightweight Alpine container enforced its limits.
+
+
+## November 20 nested-NPU startup regression
+
+The first hybrid smoke (`smoke-974c5fa3`) failed during model startup with
+`failed to open rknpu module`, `failed to open rknn device`, and
+`Failed to allocate tensor memory via RKNN API`. The runtime enumerated the
+compiled backend but was unable to allocate NPU memory. This was a preflight
+coverage bug, **not** evidence that the model needed more RAM.
+
+The correction adds the Rockchip container device-tree mount and a direct RKNN
+allocation probe. It has not yet been validated on the ROCK 5B+ through the
+nested Docker daemon. If it fails, inspect the immediate probe error and the
+availability of `/sys/firmware/devicetree/base/compatible` inside the builder.
+Do not disable safety limits, use `--privileged` on the model, or touch the host
+driver simply to bypass the error. The rest of the maintainer remains CPU mode
+by default.
