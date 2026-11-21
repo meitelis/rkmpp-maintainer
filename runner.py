@@ -96,7 +96,11 @@ class Docker:
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
         hybrid = runtime.get("backend") == "rknpu2"
-        cpu_control = selected_profile == "hybrid_cpu"
+        # Use the same RKNN-disabled pinned llama.cpp build for normal Q4
+        # coding as for the board-qualified Q4 CPU benchmark. The generic
+        # upstream llama_image is a different binary and is not that baseline.
+        cpu_control = selected_profile == "hybrid_cpu" or (
+            selected_profile == "coding" and runtime.get("backend") == "cpu")
         if runtime.get("backend", "cpu") not in {"cpu", "rknpu2"}:
             raise ValueError("Unknown model backend")
         image = (self.config["rknpu_image"] if hybrid else
