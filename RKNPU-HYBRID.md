@@ -141,17 +141,50 @@ docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py 
 docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --npu-layers 4 --ignore-window
 ```
 
-Run the experiments **sequentially**, only after checking the previously
-recorded `model-runtime.json` for real cgroup headroom. The override is
+Run experiments **sequentially**, checking the previous run's
+`model-runtime.json` for real cgroup headroom. The override is
 validated against the original `0..4` RKNN safety bound; requesting 5+
 fails before launching anything. Both tests retain standard source-repair,
 runtime metrics, protected behavioral checks and no-swap enforcement.
 
-For this Qwen MoE model, the pinned backend separately gates expert matmuls
-using `RKNPU_MOE`; that option is currently **not** enabled. First isolate
-the effect of layers with the expert path unchanged. Only consider an
-additional separately controlled experiment after RAM and NPU utilization
-evidence support it, because MoE expert NPU requantization may require more
-memory. A successful repair is necessary, but the decision should use
-prompt/tok/s, generation/tok/s, actual NPU utilization, and memory headroom,
-not wall-clock total or requested layers alone.
+### Why adding layers did not help, and the distinct MoE experiment
+
+On the ROCK 5B+ with the same pinned Q4_0 coding model and repair fixture:
+- CPU-only: 15.21 prompt tok/s, **6.29 decode tok/s**.
+- NPU 2 layers: 15.13 prompt tok/s, **4.41 decode tok/s**.
+- NPU 3 layers: 14.05 prompt tok/s, **4.35 decode tok/s**.
+
+This is a negative result for simply increasing dense-layer offload. Qwen3-Coder
+30B-A3B is a Mixture-of-Experts model: expert matmuls are `GGML_OP_MUL_MAT_ID`,
+and the pinned backend explicitly **does not** move these to the NPU unless
+`RKNPU_MOE` is set. This is a more meaningful bottleneck to test.
+
+The backend includes expert batching during prefill, but expert weight
+requantization and NPU execution are *not* qualified for this 17.3 GB model.
+Do **not** enable `RKNPU_MOE` for unattended `watch`, `once`, or
+`run` jobs. The optional `--npu-moe` switch is accepted only for
+`smoke --model-profile hybrid`, with no persistent default changes. It
+sets `RKNPU_MOE=1` plus prefill diagnostic logs
+(`RKNPU_MOE_DBG=1`) on the transient NPU model only. A one-layer option
+allows first testing the smallest expert memory footprint:
+
+```sh
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --npu-layers 1 --npu-moe --ignore-window
+```
+
+**Caution:** Expert acceleration is experimental in this pinned fork.
+Enabling it can lead to model startup failure, increased RKNN DMA allocations,
+slow generation, crashes, or poor output quality; the model remains constrained
+to the existing 18 GiB no-swap cgroup, with 19 GiB builder ceiling. No
+`RKNPU_DOMAINS` override is used—upstream warns that custom domains with
+concurrent NPU models can trigger kernel panic. Never run two experiments
+simultaneously or while another NPU-heavy workload is running. Inspect
+`model-runtime.json` and the model log, and monitor actual NPU core load
+during inference (where readable: `/sys/kernel/debug/rknpu/load`).
+
+If the one-layer trial fails or memory use is excessive, stop—not increase
+RAM or offload layers. If it completes correctly with materially better
+decode/prompt throughput and safe memory headroom, compare a **matched**
+one-layer run without `--npu-moe` to isolate the expert acceleration effect.
+Only then consider 2-layer MoE. Full correctness requires more than the
+small source-repair smoke; keep the automatic maintenance default unchanged.
