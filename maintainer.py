@@ -421,6 +421,23 @@ def discover(workspace):
     return records
 
 
+def inspect_moe_dispatch_log(log_path):
+    """Report evidence the pinned backend entered expert batching.
+
+    This is *not* a proof of NPU core utilization or correct expert outputs.
+    Log lines are emitted only on the backend's batched prefill path.
+    """
+    from pathlib import Path
+    path = Path(log_path)
+    if not path.is_file():
+        return {"expert_batch_path_observed": False, "expert_batch_log_lines": 0,
+                "model_log_available": False}
+    with path.open(errors="replace") as f:
+        lines = sum("[moe-batch]" in line for line in f)
+    return {"expert_batch_path_observed": bool(lines), "expert_batch_log_lines": lines,
+            "model_log_available": True}
+
+
 def smoke(config, workspace, model_profile="smoke"):
     """Require a model repair; retain the outcome and error even when it fails."""
     job = workspace / "jobs" / ("smoke-" + uuid.uuid4().hex[:8])
@@ -450,6 +467,9 @@ def smoke(config, workspace, model_profile="smoke"):
                     generation=settings(config, model_profile)[2], require_edit=True,
                     required_observations={"read":["go-vod/http_options.py"],
                                            "upstream":["go-vod/http_options.py"]})
+            if settings(config, model_profile)[1].get("npu_moe", False):
+                result["npu_moe_evidence"] = inspect_moe_dispatch_log(job / "model.log")
+                save_json(job / "result.json", result)
             if source.read_text() == BROKEN:
                 raise RuntimeError("Repair exercise did not change the broken source")
             save_json(job / "agent-review.json", review)
