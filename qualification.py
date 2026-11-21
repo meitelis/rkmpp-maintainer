@@ -2,11 +2,13 @@
 import datetime
 import json
 import time
+import tempfile
 import traceback
 import uuid
 from pathlib import Path
 
 from core import command, save_json
+from delivery import verify_archive_config
 from evidence import save_manifest
 from limits import job_budget
 from repair_fixture import create_fixture
@@ -28,6 +30,24 @@ def runtime_checks(config, workspace):
             # Pull before applying a two-second execution timeout.
             command(["docker", "pull", config["python_image"]], timeout=600, log=job / "pull.log")
             command(["docker", "pull", config["php_image"]], timeout=600, log=job / "pull.log")
+            # Exercise the same manifest/config check used for release delivery
+            # with an archive produced by the actual isolated Docker daemon.
+            tag = "local/rkmpp-export-check:" + uuid.uuid4().hex
+            command(["docker", "tag", config["python_image"], tag], timeout=30)
+            try:
+                with tempfile.TemporaryDirectory(dir=job) as directory:
+                    archive = Path(directory) / "image.tar"
+                    image_id = docker.export(tag, archive)
+                    verify_archive_config(archive, tag, image_id)
+                    command(["docker", "image", "rm", tag], timeout=30)
+                    command(["docker", "load", "-i", str(archive)], timeout=600)
+                    loaded = command(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
+                    if loaded != image_id:
+                        raise RuntimeError("Loaded Docker archive has a different image ID")
+            finally:
+                if command(["docker", "images", "-q", tag], timeout=30):
+                    command(["docker", "image", "rm", tag], timeout=30)
+            result["checks"]["docker_archive_roundtrip"] = "passed"
             root = job / "php"
             (root / "memories_rkmpp_v11").mkdir(parents=True)
             (root / "scripts").mkdir()

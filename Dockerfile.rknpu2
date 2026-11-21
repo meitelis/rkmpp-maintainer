@@ -1,0 +1,31 @@
+# Built on ARM64 only; the default CPU model image remains unchanged.
+# Source and bundled Rockchip runtime are pinned to the board-tested revision.
+FROM debian:bookworm-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates cmake make g++ pkg-config libgomp1 libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+ARG RK_LLAMA_COMMIT=712f4de2de8e75f0ce2193779144bee1a4e35447
+RUN git init /src && git -C /src fetch --depth 1 https://github.com/Mojo24x7/rk-llama.cpp "${RK_LLAMA_COMMIT}" \
+    && git -C /src checkout --detach FETCH_HEAD \
+    && test "$(git -C /src rev-parse HEAD)" = "${RK_LLAMA_COMMIT}" \
+    && printf '%s  %s\n' d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8 \
+       /src/ggml/src/ggml-rknpu2/libs/librknnrt.so | sha256sum -c -
+COPY rknpu_probe.cpp /src/rknpu_probe.cpp
+RUN g++ -O2 -std=c++17 -I/src/ggml/src/ggml-rknpu2/libs/include \
+    /src/rknpu_probe.cpp -L/src/ggml/src/ggml-rknpu2/libs -lrknnrt \
+    -Wl,-rpath,/opt/llama/bin -o /src/rknpu-probe
+RUN cmake -S /src -B /src/build -DLLAMA_RKNPU2=ON \
+    -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+    -DLLAMA_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /src/build -j 3 --target llama-server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libstdc++6 libgomp1 libatomic1 libcurl4 libssl3 libdrm2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/bin/ /opt/llama/bin/
+COPY --from=build /src/rknpu-probe /opt/llama/bin/rknpu-probe
+COPY --from=build /src/ggml/src/ggml-rknpu2/libs/librknnrt.so /opt/llama/bin/librknnrt.so
+ENV LD_LIBRARY_PATH=/opt/llama/bin
+EXPOSE 8080
+ENTRYPOINT ["/opt/llama/bin/llama-server"]

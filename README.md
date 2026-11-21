@@ -50,7 +50,7 @@ cd /armbian
 git clone https://github.com/meitelis/rkmpp-maintainer.git
 cd rkmpp-maintainer
 mkdir -p data builder
-docker build -t local/rkmpp-maintainer:prototype-3-portainer .
+docker build -t local/rkmpp-maintainer:pr10 .
 ```
 
 Building the image is a host preparation step. Portainer owns the running services.
@@ -69,9 +69,11 @@ In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Re
 | `AUTO_UPDATE` | `false` initially |
 | `DIND_STORAGE_DRIVER` | `overlay2` unless the existing builder used another driver |
 
-Disable image re-pulling for the locally built maintainer image. It is `local/rkmpp-maintainer:prototype-3-portainer` with `pull_policy: never`; this stack file has no build directive. Enter variables in Portainer or load the existing `.env` file there; Portainer does not automatically read `/armbian/rkmpp-maintainer/.env`.
+Disable image re-pulling for the locally built maintainer image. It is `local/rkmpp-maintainer:pr10` with `pull_policy: never`; this stack file has no build directive. Enter variables in Portainer or load the existing `.env` file there; Portainer does not automatically read `/armbian/rkmpp-maintainer/.env`.
 
 Deploy the stack. Its control should show **Total**, with a healthy builder and running maintainer. No host Docker socket or host ports are mounted/published by this stack. The builder remains privileged, as in the tested prototype, and is intended for these trusted source repositories.
+
+**RK3588 CPU + NPU (opt-in):** An experimental `hybrid` profile uses pinned Qwen3-Coder Q4_0 with two RKNPU-offloaded layers and the KV cache on CPU, within the **existing** Docker builder. The default `coding` CPU profile is unchanged. See [the exact setup, tests and restrictions](RKNPU-HYBRID.md); no NPU speedup or real upgrade success is claimed until the board passes the paired benchmark.
 
 ## Run tests from Portainer
 
@@ -84,7 +86,7 @@ python3 /opt/maintainer/maintainer.py runtime-check --wait-for-window
 python3 /opt/maintainer/maintainer.py smoke --wait-for-window
 ```
 
-Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and an 18 GiB memory/swap ceiling. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
+Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and a 17 GiB memory ceiling with swap disabled. With the 1 GiB host reserve, model startup requires 18 GiB available. The model container now checks its actual cgroup v1/v2 RAM and swap limits and refuses startup if the kernel does not enforce them. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
 
 The dense Qwen3.8-27B profile passed the small repair after cache tuning, then timed out on the larger Memories review on the Radxa. That result does not establish unattended-upgrade suitability. Its cached weights and failed-run evidence are retained.
 
@@ -113,7 +115,7 @@ Successful upgrade jobs now report **`status: built`**, **`review_status: pendin
 
 Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
 
-Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU operation remains unvalidated.
+Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU hardware matrix work has been observed in standalone board experiments, but the maintainer's hybrid model workload remains unqualified.
 
 ## Overnight admission
 
@@ -134,7 +136,7 @@ Pull the source and rebuild its local image under `/armbian`:
 ```sh
 cd /armbian/rkmpp-maintainer
 git pull --ff-only
-docker build -t local/rkmpp-maintainer:prototype-3-portainer .
+docker build -t local/rkmpp-maintainer:pr10 .
 ```
 
 Then update/redeploy the **existing stack in Portainer**, keeping its environment settings and disabling image re-pulling. Run validation from its Console. Do not use `docker compose up`, `down`, or `run` to manage the Portainer deployment. The one-time migration above is the exception that removes the legacy external project.

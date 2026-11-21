@@ -176,6 +176,26 @@ def review_targets(project, root, changes):
     return {"read":list(dict.fromkeys(local)), "diff":list(dict.fromkeys([*paths, *runtime]))}
 
 
+def previous_review(job, project, target):
+    try:
+        release = (job / "release.json").read_bytes()
+    except FileNotFoundError:
+        return None  # Without a release identity, start a fresh review.
+    candidates = sorted(job.parent.glob(f"{project}-{target}-*/agent-0.jsonl"),
+                        key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        try:
+            result = json.loads((path.parent / "result.json").read_text())
+            if (result.get("kind") == "release-candidate"
+                    and result.get("status") in {"failed", "interrupted"}
+                    and result.get("phase") in {"model-review-1", "export"}
+                    and (path.parent / "release.json").read_bytes() == release):
+                return path
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def run_job(project, config, workspace, target, base_ref="main", source_version=None, publish_code=False, no_agent=False,
             model_profile="coding"):
     job = workspace / "jobs" / (project + "-" + target + "-" + uuid.uuid4().hex[:8])
@@ -210,7 +230,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     result["agent_review"] = {"review_complete": False, "assessment": "in-progress",
                                               "attempt": attempt + 1}
                     # The model edits the candidate. It is unloaded before builds and hardware tests.
-                    with docker.model(smoke=model_profile == "smoke",
+                    with docker.model(profile=model_profile,
                                       metrics_path=job / f"model-runtime-{attempt}.json") as endpoint:
                         record_runtime(job, docker)
                         review = run_agent(root, upstream,
@@ -218,7 +238,9 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                             lambda p: git(upstream, "diff", "base", "target", "--", p), endpoint,
                             project, job / f"agent-{attempt}.jsonl", turns=config["agent_turns"],
                             generation=settings(config, model_profile)[2],
-                            required_observations=review_targets(project, root, changes))
+                            required_observations=review_targets(project, root, changes),
+                            previous_transcript=previous_review(job, project, target)
+                            if attempt == 0 and result["kind"] == "release-candidate" else None)
                         result["agent_review"] = review
                         save_json(job / f"agent-review-{attempt}.json", review)
                         save_json(job / "agent-review.json", review)
@@ -464,7 +486,7 @@ def smoke(config, workspace, model_profile="smoke"):
                     "Use action upstream with path go-vod/http_options.py for the reference. "
                     "Do not change tests. Finish only after completing the repair; otherwise report a blocker.")
             phase(job, result, "model-repair")
-            with docker.model(smoke=model_profile == "smoke", metrics_path=job / "model-runtime.json") as endpoint:
+            with docker.model(profile=model_profile, metrics_path=job / "model-runtime.json") as endpoint:
                 record_runtime(job, docker)
                 review = run_agent(root, upstream, task,
                     lambda _: "".join(difflib.unified_diff(BROKEN.splitlines(True), REFERENCE.splitlines(True))),
@@ -622,7 +644,7 @@ def main():
     parser.add_argument("--no-agent", action="store_true", help="Test trusted reconciliation/builds without asking a model")
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
-    parser.add_argument("--model-profile", choices=["coding", "smoke"])
+    parser.add_argument("--model-profile", choices=["coding", "smoke", "hybrid", "hybrid_cpu"])
     parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
     parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
@@ -634,7 +656,10 @@ def main():
         print("Ready for Portainer Console jobs. Set MAINTAINER_ACTION=watch in the stack to monitor releases.", flush=True)
         while True:
             time.sleep(60)
-    profile = args.model_profile or ("smoke" if args.action == "smoke" else "coding")
+    profile = args.model_profile or os.environ.get("MODEL_PROFILE") or (
+        "smoke" if args.action == "smoke" else "coding")
+    if profile not in {"smoke", "coding", "hybrid", "hybrid_cpu"}:
+        parser.error("Invalid MODEL_PROFILE; expected coding, smoke, hybrid or hybrid_cpu")
     if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
         # Reap abandoned owned workloads before judging whether enough RAM is idle.
         with locked(workspace / "maintainer.lock"):

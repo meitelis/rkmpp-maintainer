@@ -12,8 +12,8 @@ import urllib.request
 from pathlib import Path
 from core import command, download_model, save_json
 from limits import bounded_timeout, check_budget, cleanup_budget, require_space
-from model_settings import require_model_memory, settings
-from model_metrics import CGROUP_COMMAND, CgroupSampler
+from model_settings import require_model_memory, settings, validated_existing_model, hybrid_docker_options
+from model_metrics import CGROUP_COMMAND, CgroupSampler, require_enforced_memory_limits
 
 PHP_LINT_CHECK = "find memories_rkmpp_v11 -name '*.php' -exec sh -ec 'for f do php -l \"$f\" || exit; done' sh {} + && php scripts/test-v11-compat.php"
 
@@ -82,23 +82,26 @@ class Docker:
             command(["docker", "image", "rm", tag], timeout=120)
 
     @contextlib.contextmanager
-    def model(self, smoke=False, metrics_path=None):
+    def model(self, smoke=False, metrics_path=None, profile=None):
         if endpoint := os.environ.get("MODEL_ENDPOINT"):
             self.model_evidence = {"external":True, "identity_verified":False}
             yield endpoint.rstrip("/")
             return
         self.verify()
-        spec, runtime, _ = settings(self.config, "smoke" if smoke else "coding")
+        spec, runtime, _ = settings(self.config, profile or ("smoke" if smoke else "coding"))
         memory_preflight = require_model_memory(self.config, spec, runtime)
-        print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
-        path = download_model(spec, self.workspace / "models" / spec["filename"])
         name = "rkmpp-maintainer-model"
         # Only touch this stack's transient model in its own daemon.
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
-        image = self.config["llama_image"]
+        hybrid = runtime.get("backend") == "rknpu2"
+        if runtime.get("backend", "cpu") not in {"cpu", "rknpu2"}:
+            raise ValueError("Unknown model backend")
+        image = self.config["rknpu_image"] if hybrid else self.config["llama_image"]
         threads = str(runtime.get("threads", 4))
         docker_options = ["--oom-score-adj","1000"]
+        npu_docker, npu_flags = hybrid_docker_options(runtime)
+        docker_options += npu_docker
         if runtime.get("cpu_set"):
             docker_options += ["--cpuset-cpus", runtime["cpu_set"]]
         if runtime.get("no_swap"):
@@ -110,7 +113,42 @@ class Docker:
                             ("cache_ram","--cache-ram"), ("context_checkpoints","--ctx-checkpoints")]:
             if field in runtime:
                 model_options += [flag, str(runtime[field])]
-        command(["docker", "pull", image], timeout=600)
+        if hybrid:
+            # Build the pinned runtime once in our existing isolated builder.
+            try:
+                command(["docker", "image", "inspect", image], timeout=20)
+            except RuntimeError:
+                source = Path(__file__).resolve().parent
+                command(["docker", "build", "-f", str(source / "Dockerfile.rknpu2"),
+                         "-t", image, str(source)], timeout=3600)
+            if runtime.get("npu_layers", 0) > 0:
+                # --list-devices only proves that the backend was compiled.
+                # Exercise the exact same board-verified /dev/dri mapping
+                # through RKNN matmul context and allocation APIs before even
+                # checksumming the existing 17 GB GGUF.
+                try:
+                    probe = command([
+                        "docker", "run", "--rm", "--network", "none",
+                        "--memory", "512m", "--memory-swap", "512m",
+                        *npu_docker, "--entrypoint", "/opt/llama/bin/rknpu-probe",
+                        image], timeout=90)
+                except RuntimeError as error:
+                    raise RuntimeError(
+                        "NPU preflight failed before model loading. The nested "
+                        "container cannot initialize RKNN or allocate NPU memory; "
+                        "check /dev/dri access and the device-tree paths. "
+                        + str(error)) from error
+                if "RKNPU_PROBE_OK" not in probe.splitlines():
+                    raise RuntimeError(
+                        "NPU preflight produced no successful RKNN allocation "
+                        "confirmation; refusing hybrid model startup")
+        else:
+            command(["docker", "pull", image], timeout=600)
+        # The NPU probe must pass before expensive hash validation and model
+        # load. Reuse the pinned existing model without duplicating weights.
+        print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
+        path = validated_existing_model(spec, self.workspace) or download_model(
+            spec, self.workspace / "models" / spec["filename"])
         endpoint = "http://builder:8080"
         sampler = None
         try:
@@ -122,7 +160,14 @@ class Docker:
                  "--alias", "local-maintainer", "--ctx-size", str(runtime.get("context_size", 16384)),
                  "--threads", threads, "--parallel", "1", "--jinja",
                  "--reasoning-format", "deepseek",
-                 "--reasoning-budget", str(runtime.get("reasoning_budget", 1024)), *model_options], timeout=60)
+                 "--reasoning-budget", str(runtime.get("reasoning_budget", 1024)), *model_options, *npu_flags], timeout=60)
+            # Docker's requested limits are not evidence that cgroup v1
+            # actually enforces memory+swap. Check the live model container.
+            cgroup_text = command(["docker", "exec", name, "sh", "-c",
+                                   CGROUP_COMMAND], timeout=15)
+            cgroup_values = dict(line.split("=", 1) for line in cgroup_text.splitlines() if "=" in line)
+            enforced_limits = require_enforced_memory_limits(
+                cgroup_values, runtime.get("memory", "12g"), runtime.get("no_swap", False))
             if metrics_path:
                 sampler = CgroupSampler(lambda:command(["docker","exec",name,"sh","-c",CGROUP_COMMAND],timeout=5),
                                         metrics_path,runtime)
@@ -142,7 +187,12 @@ class Docker:
                 raise RuntimeError("Local model did not become ready in ten minutes")
             self.model_evidence = {"container_image_id":command(
                 ["docker", "inspect", name, "--format", "{{.Image}}"], timeout=30),
-                "model_sha256":spec["sha256"], "filename":spec["filename"], **memory_preflight}
+                "model_sha256":spec["sha256"], "filename":spec["filename"],
+                "backend": "rknpu2" if hybrid else "cpu",
+                "npu_layers_requested": runtime["npu_layers"] if hybrid else 0,
+                "npu_device_detected": bool(hybrid and runtime["npu_layers"] > 0),
+                "npu_execution_verified": False,
+                **memory_preflight, **enforced_limits}
             yield endpoint
         finally:
             try:

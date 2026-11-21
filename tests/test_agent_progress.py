@@ -95,7 +95,9 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(len(progress["observations"]), 12)
         self.assertEqual(progress["observations"][0]["start"], 1)
         self.assertTrue(all(x["result"] == "observed" for x in progress["observations"]))
-        self.assertLess(len(self.calls[-1]), 26)  # Most raw read results have left the context.
+        # A stable conversation retains more exchanges than the old 8-message
+        # sliding window, but must remain within the bounded context.
+        self.assertLessEqual(sum(len(m["content"]) for m in self.calls[-1]), 32000)
 
     def test_old_page_is_still_available_for_an_exact_edit_when_reread(self):
         self.source.write_text("\n".join(f"line {i}" for i in range(500)))
