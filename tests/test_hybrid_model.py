@@ -29,7 +29,8 @@ class HybridModelTests(unittest.TestCase):
         runtime = {"backend": "rknpu2", "npu_layers": 2,
                    "npu_device": "/dev/dri/renderD129", "no_swap": True}
         docker, model = hybrid_docker_options(runtime)
-        self.assertIn("/dev/dri/renderD129:/dev/dri/renderD129", docker)
+        self.assertIn("/dev/dri:/dev/dri", docker)
+        self.assertNotIn("/dev/dri/renderD129:/dev/dri/renderD129", docker)
         self.assertIn("nofile=262144:262144", docker)
         self.assertIn("--security-opt", docker)
         self.assertIn("systempaths=unconfined", docker)
@@ -107,12 +108,14 @@ class HybridModelTests(unittest.TestCase):
             self.assertEqual(run[run.index("--memory")+1], "18g")
             self.assertEqual(run[run.index("--memory-swap")+1], "18g")
             self.assertIn("--device", run)
+            self.assertEqual(run[run.index("--device") + 1], "/dev/dri:/dev/dri")
             self.assertIn("--security-opt", run)
             self.assertIn("systempaths=unconfined", run)
             probes = [x for x in commands if x[:2] == ["docker", "run"]
                       and "--entrypoint" in x]
             self.assertEqual(len(probes), 1)
             self.assertIn("/opt/llama/bin/rknpu-probe", probes[0])
+            self.assertEqual(probes[0][probes[0].index("--device") + 1], "/dev/dri:/dev/dri")
             self.assertIn("--no-kv-offload", run)
             self.assertEqual(run[run.index("-ngl")+1], "2")
             self.assertIn("RKNPU_GLUE=1", run)
@@ -135,8 +138,11 @@ class HybridModelTests(unittest.TestCase):
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
                  patch.object(Docker, "verify"), \
                  patch("runner.require_model_memory", return_value={}), \
-                 patch("runner.download_model", return_value=Path(temp)/"q4.gguf"), \
+                 patch("runner.download_model", return_value=Path(temp)/"q4.gguf") as download, \
+                 patch("runner.validated_existing_model") as existing, \
                  patch("runner.command", side_effect=run_command):
                 with self.assertRaisesRegex(RuntimeError, "NPU preflight failed before model loading"):
                     with Docker(conf,temp).model(profile="hybrid"): pass
+                download.assert_not_called()
+                existing.assert_not_called()
             self.assertFalse(any(x[:3] == ["docker", "run", "-d"] for x in commands))
