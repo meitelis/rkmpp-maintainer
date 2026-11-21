@@ -1,123 +1,102 @@
-## Optional RK3588 CPU + NPU experiment (one existing stack)
+# RK3588 MoE execution policy — CPU-mapped experts with NPU-eligible dense operations
 
-`MODEL_PROFILE=hybrid` is an **opt-in** model profile for the existing
-`rkmpp-maintainer` stack. The default `coding` profile remains CPU-only Qwen
-Q3_K_L. No persistent container, second daemon, production deployment, or
-automatic upgrade is introduced.
+This document describes the **single** hybrid profile in the existing
+`rkmpp-maintainer` service. It is opt-in, is not the default unattended update
+profile, and never deploys updated Immich or Memories containers automatically.
 
-The hybrid profile uses the exact-hash Qwen3-Coder-30B-A3B-Instruct Q4_0 GGUF
-tested on the board (SHA-256 `cb55db3283b0b3790c8bf0b976ce0b09f64d182611e89703186c383c090825c4`)
-and the pinned [Rockchip llama.cpp backend](https://github.com/Mojo24x7/rk-llama.cpp/tree/712f4de2de8e75f0ce2193779144bee1a4e35447).
-Only `Q4_0` was selected because the backend's NPU matmuls do not support
-Q3_K_L. The 17 GiB CPU coding model is not silently substituted.
+## Decision and evidence
 
-The **same** isolated Docker builder compiles `Dockerfile.rknpu2` once if its
-image is absent. Before loading the ~17 GB Qwen model, it launches a small
-temporary RKNN probe using the **same** `/dev/dri` device-group mapping
-and a narrowly scoped `systempaths=unconfined` setting on the temporary
-NPU model/probe only, allowing the RKNN runtime to inspect SoC system paths.
-No direct `/proc` bind mount is attempted (modern runc rejects those). The probe must create an RKNN matmul context
-**and allocate actual NPU tensor memory**. This replaces the previous
-`--list-devices` check, which incorrectly reported success when the
-runtime could not open the NPU driver. A failed probe aborts quickly, **before the 17 GB GGUF checksum**, with a
-specific error rather than failing after model loading.
+The model is Qwen3-Coder-30B-A3B-Instruct Q4_0, SHA-256
+`cb55db3283b0b3790c8bf0b976ce0b09f64d182611e89703186c383c090825c4`
+(17,304,492,352 bytes), using the already-pinned
+[`Mojo24x7/rk-llama.cpp@712f4de`](https://github.com/Mojo24x7/rk-llama.cpp/tree/712f4de2de8e75f0ce2193779144bee1a4e35447).
+The file is reused after hash validation; no duplicate 17 GB download.
 
-Only after the probe passes does it validate the pinned Qwen model's checksum
-and launch it with `--device /dev/dri`, requesting **two NPU layers** with
-`-ngl 2 --no-kv-offload`, and pins four A76 cores. It applies a
-262,144 file-descriptor limit to avoid the previously observed RKNN fd
-exhaustion. Docker enforces **18 GiB combined RAM+swap** for the model inside
-the existing **19 GiB** isolated builder and verifies live cgroup limits.
-An inaccessible NPU stops the hybrid request; successful device enumeration alone is not considered proof of NPU availability.
-CPU mode can always be selected again without rebuilding the stack.
+On the user's 24 GB ROCK 5B+, the same real source-repair smoke passed with:
+- CPU-only Q4 control: **15.21 prompt / 6.29 decode tok/s**.
+- Previous RKNN profile, requesting `-ngl 2`: **15.13 / 4.41 tok/s**.
+- Previous RKNN profile, requesting `-ngl 3`: **14.05 / 4.35 tok/s**.
 
-If present, `/workspace/experiments/coder-rknpu2-20261119/coder-q4.gguf` is
-verified by size and SHA-256 and reused **without duplicating the 17 GB file**.
-Otherwise the publisher-pinned GGUF is downloaded and verified in
-`/workspace/models`. Keep the 1 GiB admission reserve and do not change
-system-wide swap/zram or the builder ceiling.
+These data **do not prove that two or three layers ran on the NPU**. This pinned
+backend defaults to GGML's **ACCEL** device type, not GPU: the CLI explicitly
+warns that `--gpu-layers` is ignored. ACCEL devices can still own and execute
+supported operations through the normal CPU buffer candidate list. NPU
+allocation probe success alone does not demonstrate that matmuls actually
+executed there.
 
-**Board qualification before enabling unattended updates:**
+The attempt to put **MoE expert weights** on the NPU, even with one requested
+layer, hit the **18 GiB model cgroup** and exited 137 (`OOMKilled=true`).
+That was an inner container OOM, *not evidence that all 24 GB physical RAM was
+consumed*. The builder is capped at **19 GiB**; raising the inner cap alone
+would be dangerous. Do not repeat that approach.
 
-1. Check that the existing builder exposes `/dev/dri/renderD129`. Do not
-   install new services or alter the host kernel.
-2. With the Portainer maintainer set to idle and no concurrent model jobs,
-   open its Console and run:
-   `python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --ignore-window`.
-   The manual override skips the night schedule, **not** memory admission.
-3. Confirm `model-runtime.json` records enforced no-swap cgroup, backend
-   `rknpu2`, `npu_layers_requested=2`, and device detection. Independently
-   check actual RKNPU kernel-load samples during inference and model logs for
-   hardware matmuls. **Device detection is not proof of NPU computation.**
-4. Confirm protected source-repair tests pass. Then benchmark the same Q4_0 GGUF
-   and workload on CPU only:
-   `python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid_cpu --ignore-window`
-   The `hybrid_cpu` control builds the **same pinned llama.cpp source** with
-   `-DLLAMA_RKNPU2=OFF`, checks that no RKNPU device is advertised, passes
-   **no** `/dev/dri` devices and runs `-ngl 0 --no-kv-offload`. It reuses the
-   same model bytes, context, thread count, sampling, CPU affinity and memory limits.
-   Because the backend compilation differs (necessarily), this is a matched
-   model/workload comparison, not byte-identical executable performance.
-   Compare completed wall-clock time and correctness. Never run both simultaneously.
-   Only then consider selecting `MODEL_PROFILE=hybrid` for ordinary watcher runs.
+The pinned backend's own
+[benchmarks](https://github.com/Mojo24x7/rk-llama.cpp/blob/712f4de2de8e75f0ce2193779144bee1a4e35447/BENCHMARKS.md)
+on **a different, non-Coder Qwen3-30B-A3B MoE** report a better practical
+single-board strategy: CPU expert routing with memory-mapped, un-repacked
+weights, and NPU-eligible dense matrices. Those measurements are a useful
+architectural basis, **not** a performance guarantee for this Coder model,
+24 GB board, kernel or workload. This fork documents that INT4 NPU matmuls
+batch poorly; forcing Q4 weights into W8A8 may help dense prefill, but is
+not a reason to duplicate the large routed expert tensors.
 
-**Known limitation:** The Q4_0 hybrid model, usable context length,
-NPU utilisation, protected-repair success, and net throughput are **not yet
-qualified in the live maintainer**. The first on-board test may hit the
-18 GiB ceiling; in that case stop testing and keep `coding` rather than
-raising the nested limit or compromising your other services.
-The on-board model's cgroup settings must be checked separately even though
-the previously tested lightweight Alpine container enforced its limits.
+## One coherent, memory-bounded policy
 
+`--model-profile hybrid` now uses:
 
-## November 20 nested-NPU startup regression
+- `--cpu-moe`: experts remain on the CPU, rather than attempting NPU
+  requantization/allocation of the entire routed expert set.
+- `--no-repack`: expert GGUF Q4_0 weights remain mmap-backed and reclaimable.
+- `--fit off`: do not let llama.cpp's GPU-fit planner silently adjust placement;
+  Docker cgroups still enforce model RAM and **no swap**.
+- `--no-kv-offload`: host KV cache, avoiding unsupported RKNN KV writes.
+- `RKNPU_HYBRID=W8A8_STANDARD`, `RKNPU_GLUE=1`: the same supported dense
+  pipeline as previously, with eligible **non-expert** tensors offered to
+  RKNPU's ACCEL backend.
+- Exactly four A76 cores (`cpu_set=4-7`), `--threads 4` and flash attention.
+  The model context remains 4096; expert routing is **not** reduced.
+- Existing NPU driver/allocation probe via the board-verified
+  `--device /dev/dri:/dev/dri` and `systempaths=unconfined`, without
+  `--privileged` or custom `RKNPU_DOMAINS`.
 
-The first hybrid smoke (`smoke-974c5fa3`) failed during model startup with
-`failed to open rknpu module`, `failed to open rknn device`, and
-`Failed to allocate tensor memory via RKNN API`. The runtime enumerated the
-compiled backend but was unable to allocate NPU memory. This was a preflight
-coverage bug, **not** evidence that the model needed more RAM.
+There is **no** `-ngl` knob or fake NPU-layer counter. The hybrid runtime
+records `moe_expert_placement=cpu-mmap`,
+`npu_allocation_probe_passed=true`, and
+`npu_execution_verified=false` until there is **independent** hardware
+evidence. Default coding mode remains the previously validated CPU Q3_K_L;
+`hybrid_cpu` remains the matched pure-CPU Q4_0 control compiled from the
+same pinned fork with `-DLLAMA_RKNPU2=OFF`.
 
-The correction gives only the short-lived NPU container visibility into
-Rockchip's system paths and adds a direct RKNN allocation probe. It has not yet been validated on the ROCK 5B+ through the
-nested Docker daemon. If it fails, inspect the immediate probe error and the
-availability of `/sys/firmware/devicetree/base/compatible` inside the builder.
-Do not disable safety limits, give the model full `--privileged` access, or
-touch the host driver simply to bypass an initialization error. The rest of the maintainer remains CPU mode
-by default.
+The model's 18 GiB memory-and-swap ceiling, DinD builder's **19 GiB** ceiling,
+and the work-window 1 GiB host reserve are unchanged. The maintainer runs in
+the existing Portainer stack. The deployment remains owner-controlled.
 
-## November 21 on-board DRM device isolation
+## One board qualification, no random parameter sweep
 
-The ROCK 5B+ reports `/dev/dri/renderD129` as the `RKNPU` driver on both
-the host and existing Docker-in-Docker builder. Nevertheless, the nested
-`rknpu-probe` failed to create an RKNN matmul context with only
-`--device /dev/dri/renderD129`, even when seccomp was disabled or
-`CAP_SYS_ADMIN` was added. The **same RKNN probe succeeded** when the
-nested container received `--device /dev/dri`, without `--privileged`.
-Adding `/dev/dma_heap` also succeeded but was not necessary for the probe.
+Build and recreate the maintainer image from the clean PR branch in Portainer
+(**do not pull a remote image**, keep `MAINTAINER_ACTION=idle`), then execute:
 
-Therefore the NPU-only path now uses `--device /dev/dri` for **both** the
-temporary allocation probe and the model. This gives the NPU workload access
-to the DRM device group, including non-NPU DRM nodes, but is much narrower
-than `--privileged`. CPU profiles remain unchanged. The allocation probe
-now runs **before** hashing/downloading the 17 GB GGUF. Successful small
-allocation proves driver access, **not** full-model success, correct coding
-repair, or a speedup; those require the subsequent paired on-board benchmark.
+```sh
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --ignore-window
+```
 
-## November 21 Q4 CPU baseline failure and correction
+The smoke must pass agent source edit, protected tests and image export.
+Inspect its `model.log` for the expected ACCEL/backend buffer placement,
+actual RKNN matmul activity if reported, and absence of unexpected NPU expert
+allocation, and its `model-runtime.json` for `OOMKilled=false`, no-swap
+enforcement and peak memory. During inference, independently inspect
+`/sys/kernel/debug/rknpu/load` for real hardware activity, where accessible.
+A correct edit or successful preflight alone is insufficient evidence.
 
-The first matched `hybrid_cpu` smoke (`smoke-fc7813b6`) failed before coding,
-because the previous baseline used an RKNPU-enabled binary with `-ngl 0`.
-That pinned fork **still initialized an RKNN allocation** even with zero layers,
-and with no DRM passthrough the model aborted. Giving the CPU baseline NPU
-permissions would invalidate the benchmark.
+Compare `agent.jsonl` prompt/decode timing against the existing pure-CPU Q4
+control, using the **same task, model hash, context and thread count**.
+Include load cost separately from inference time. The repair fixture alone
+does not validate general coding quality; manual review of genuine patch
+output remains necessary. The target is to **beat** CPU-only Q4's
+6.29 decode tok/s with coherent edits and lower or equal memory demand.
+If it does not, **prefer the CPU profile**; stop experimenting with arbitrary
+NPU layer counts or RAM increases.
 
-The corrected control builds the exact same pinned `rk-llama.cpp` revision with
-`LLAMA_RKNPU2=OFF` into a separately tagged image
-(`local/rkmpp-llama-cpu:712f4de-control1`) **within the existing builder**.
-It verifies that the CPU binary does not enumerate an RKNPU backend before it
-checksums/loads the existing 17 GB model. The NPU path and default CPU coding
-Q3 profile remain unchanged. The 18 GiB model and 19 GiB builder ceilings remain.
-
-Successful compilation and CI do not establish a successful large Q4 CPU
-inference run: test on the ROCK 5B+ before interpreting timing results.
+Upstream examples sometimes use `-ngl 99` even though the ACCEL backend logs
+the GPU-layers warning. This configuration intentionally avoids pretending
+that the integer controls the ACCEL device's real offload amount.
