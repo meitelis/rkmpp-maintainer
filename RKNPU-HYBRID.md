@@ -14,8 +14,9 @@ Q3_K_L. The 17 GiB CPU coding model is not silently substituted.
 The **same** isolated Docker builder compiles `Dockerfile.rknpu2` once if its
 image is absent. Before loading the ~17 GB Qwen model, it launches a small
 temporary RKNN probe using the **same** `/dev/dri/renderD129` device mapping
-and read-only Rockchip SoC device-tree compatibility file at
-`/proc/device-tree/compatible`. The probe must create an RKNN matmul context
+and a narrowly scoped `systempaths=unconfined` setting on the temporary
+NPU model/probe only, allowing the RKNN runtime to inspect SoC system paths.
+No direct `/proc` bind mount is attempted (modern runc rejects those). The probe must create an RKNN matmul context
 **and allocate actual NPU tensor memory**. This replaces the previous
 `--list-devices` check, which incorrectly reported success when the
 runtime could not open the NPU driver. A failed probe aborts quickly with a
@@ -72,10 +73,10 @@ The first hybrid smoke (`smoke-974c5fa3`) failed during model startup with
 compiled backend but was unable to allocate NPU memory. This was a preflight
 coverage bug, **not** evidence that the model needed more RAM.
 
-The correction adds the Rockchip container device-tree mount and a direct RKNN
-allocation probe. It has not yet been validated on the ROCK 5B+ through the
+The correction gives only the short-lived NPU container visibility into
+Rockchip's system paths and adds a direct RKNN allocation probe. It has not yet been validated on the ROCK 5B+ through the
 nested Docker daemon. If it fails, inspect the immediate probe error and the
 availability of `/sys/firmware/devicetree/base/compatible` inside the builder.
-Do not disable safety limits, use `--privileged` on the model, or touch the host
-driver simply to bypass the error. The rest of the maintainer remains CPU mode
+Do not disable safety limits, give the model full `--privileged` access, or
+touch the host driver simply to bypass an initialization error. The rest of the maintainer remains CPU mode
 by default.
