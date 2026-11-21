@@ -6,6 +6,16 @@ def settings(config, name="coding"):
     if name not in {"coding", "smoke", "hybrid", "hybrid_cpu"}:
         raise ValueError("Unknown model profile")
     spec = copy.deepcopy(config.get("models", {}).get("hybrid" if name == "hybrid_cpu" else name, {}))
+    # The default coding profile uses the same checksum-verified Q4_0 file as
+    # the qualified CPU control; keep a single source of model identity.
+    source_name = spec.pop("model_ref", None)
+    if source_name is not None:
+        if name != "coding" or source_name != "hybrid":
+            raise ValueError("Only coding may reference the pinned hybrid Q4 model")
+        source = config["models"]["hybrid"]
+        for field in ("url", "filename", "sha256", "bytes", "existing_path"):
+            if field in source:
+                spec[field] = source[field]
     runtime = {**config.get("model_runtime", {}), **spec.pop("runtime", {})}
     if name == "hybrid_cpu":
         # Use the identical pinned fork and GGUF, but compile without RKNN.
