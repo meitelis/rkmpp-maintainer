@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from model_settings import hybrid_docker_options, settings, validated_existing_model
+from model_settings import hybrid_docker_options, settings, validated_existing_model, with_smoke_npu_layers
 from runner import Docker
 
 
@@ -24,6 +24,31 @@ class HybridModelTests(unittest.TestCase):
         self.assertTrue(hybrid["no_swap"])
         self.assertEqual(model["bytes"], 17304492352)
         self.assertTrue(model["filename"].endswith("Q4_0.gguf"))
+
+    def test_manual_smoke_can_select_more_npu_layers_without_changing_defaults(self):
+        config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        original_layers = settings(config, "hybrid")[1]["npu_layers"]
+        self.assertEqual(original_layers, 2)
+        self.assertIs(with_smoke_npu_layers(config, "smoke", "hybrid", None), config)
+        for layers in (2, 3, 4):
+            with self.subTest(layers=layers):
+                trial = with_smoke_npu_layers(config, "smoke", "hybrid", layers)
+                self.assertEqual(settings(trial, "hybrid")[1]["npu_layers"], layers)
+                self.assertEqual(hybrid_docker_options(settings(trial, "hybrid")[1])[1],
+                                 ["-ngl", str(layers), "--no-kv-offload"])
+                self.assertEqual(settings(trial, "hybrid_cpu")[1]["npu_layers"], 0)
+                self.assertEqual(settings(trial, "coding")[1], settings(config, "coding")[1])
+                self.assertEqual(trial["models"]["hybrid"]["runtime"]["memory"], "18g")
+                self.assertTrue(trial["models"]["hybrid"]["runtime"]["no_swap"])
+                self.assertEqual(config["models"]["hybrid"]["runtime"]["npu_layers"], 2)
+        for action, profile, layers in (
+                ("run", "hybrid", 4), ("watch", "hybrid", 4),
+                ("smoke", "coding", 4), ("smoke", "hybrid_cpu", 4),
+                ("smoke", "hybrid", 5), ("smoke", "hybrid", 8),
+                ("smoke", "hybrid", 0), ("smoke", "hybrid", True)):
+            with self.subTest(action=action, profile=profile, layers=layers):
+                with self.assertRaises(ValueError):
+                    with_smoke_npu_layers(config, action, profile, layers)
 
     def test_hybrid_options_are_bounded_and_explicit(self):
         runtime = {"backend": "rknpu2", "npu_layers": 2,
