@@ -121,5 +121,6 @@
     "idle_retry_seconds": 300,
     "finish_current_job": true
   },
-  "rknpu_image": "local/rkmpp-llama-rknpu2:712f4de-probe1"
+  "rknpu_image": "local/rkmpp-llama-rknpu2:712f4de-probe1",
+  "cpu_control_image": "local/rkmpp-llama-cpu:712f4de-control1"
 }

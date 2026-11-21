@@ -49,12 +49,17 @@ system-wide swap/zram or the builder ceiling.
    `rknpu2`, `npu_layers_requested=2`, and device detection. Independently
    check actual RKNPU kernel-load samples during inference and model logs for
    hardware matmuls. **Device detection is not proof of NPU computation.**
-4. Confirm protected source-repair tests pass. Then test the same Q4_0 GGUF,
-   same backend binary, context and workload on CPU only:
+4. Confirm protected source-repair tests pass. Then benchmark the same Q4_0 GGUF
+   and workload on CPU only:
    `python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid_cpu --ignore-window`
-   The `hybrid_cpu` control uses `-ngl 0` with no NPU device. Compare
-   completed wall-clock time and correctness. Never run both simultaneously. Only then consider
-   selecting `MODEL_PROFILE=hybrid` for ordinary watcher runs.
+   The `hybrid_cpu` control builds the **same pinned llama.cpp source** with
+   `-DLLAMA_RKNPU2=OFF`, checks that no RKNPU device is advertised, passes
+   **no** `/dev/dri` devices and runs `-ngl 0 --no-kv-offload`. It reuses the
+   same model bytes, context, thread count, sampling, CPU affinity and memory limits.
+   Because the backend compilation differs (necessarily), this is a matched
+   model/workload comparison, not byte-identical executable performance.
+   Compare completed wall-clock time and correctness. Never run both simultaneously.
+   Only then consider selecting `MODEL_PROFILE=hybrid` for ordinary watcher runs.
 
 **Known limitation:** The Q4_0 hybrid model, usable context length,
 NPU utilisation, protected-repair success, and net throughput are **not yet
@@ -98,3 +103,21 @@ than `--privileged`. CPU profiles remain unchanged. The allocation probe
 now runs **before** hashing/downloading the 17 GB GGUF. Successful small
 allocation proves driver access, **not** full-model success, correct coding
 repair, or a speedup; those require the subsequent paired on-board benchmark.
+
+## November 21 Q4 CPU baseline failure and correction
+
+The first matched `hybrid_cpu` smoke (`smoke-fc7813b6`) failed before coding,
+because the previous baseline used an RKNPU-enabled binary with `-ngl 0`.
+That pinned fork **still initialized an RKNN allocation** even with zero layers,
+and with no DRM passthrough the model aborted. Giving the CPU baseline NPU
+permissions would invalidate the benchmark.
+
+The corrected control builds the exact same pinned `rk-llama.cpp` revision with
+`LLAMA_RKNPU2=OFF` into a separately tagged image
+(`local/rkmpp-llama-cpu:712f4de-control1`) **within the existing builder**.
+It verifies that the CPU binary does not enumerate an RKNPU backend before it
+checksums/loads the existing 17 GB model. The NPU path and default CPU coding
+Q3 profile remain unchanged. The 18 GiB model and 19 GiB builder ceilings remain.
+
+Successful compilation and CI do not establish a successful large Q4 CPU
+inference run: test on the ROCK 5B+ before interpreting timing results.

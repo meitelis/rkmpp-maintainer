@@ -8,7 +8,10 @@ def settings(config, name="coding"):
     spec = copy.deepcopy(config.get("models", {}).get("hybrid" if name == "hybrid_cpu" else name, {}))
     runtime = {**config.get("model_runtime", {}), **spec.pop("runtime", {})}
     if name == "hybrid_cpu":
-        # Exact same GGUF and RKNPU2 binary; CPU control changes only -ngl.
+        # Use the identical pinned fork and GGUF, but compile without RKNN.
+        # The RKNPU-enabled binary still initializes its device with -ngl 0,
+        # so disabling layer offload alone is NOT a valid CPU baseline.
+        runtime["backend"] = "cpu"
         runtime["npu_layers"] = 0
     generation = copy.deepcopy(config.get("generation", {}))
     override = spec.pop("generation", {})

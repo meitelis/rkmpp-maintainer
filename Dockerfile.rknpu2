@@ -14,7 +14,12 @@ COPY rknpu_probe.cpp /src/rknpu_probe.cpp
 RUN g++ -O2 -std=c++17 -I/src/ggml/src/ggml-rknpu2/libs/include \
     /src/rknpu_probe.cpp -L/src/ggml/src/ggml-rknpu2/libs -lrknnrt \
     -Wl,-rpath,/opt/llama/bin -o /src/rknpu-probe
-RUN cmake -S /src -B /src/build -DLLAMA_RKNPU2=ON \
+# The CPU benchmark uses the same pinned source but *does not compile*
+# the RKNN ggml backend. This is essential: -ngl 0 still initializes RKNN
+# when the backend is compiled in on this pinned fork.
+ARG LLAMA_RKNPU2=ON
+RUN case "$LLAMA_RKNPU2" in ON|OFF) ;; *) exit 1;; esac \
+    && cmake -S /src -B /src/build -DLLAMA_RKNPU2="$LLAMA_RKNPU2" \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
     -DLLAMA_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release \
     && cmake --build /src/build -j 3 --target llama-server
