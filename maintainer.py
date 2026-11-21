@@ -22,7 +22,7 @@ from runner import Docker
 from limits import job_budget, require_space
 from evidence import record_runtime, save_manifest
 from qualification import runtime_checks
-from model_settings import settings
+from model_settings import settings, with_smoke_npu_layers
 from schedule import admission, wait_for_window
 from delivery import verify_release_image
 from lessons import verified_lessons, record_verified_repair
@@ -601,6 +601,8 @@ def main():
     parser.add_argument("--workspace", type=Path, default=Path(os.environ.get("WORKSPACE", "/workspace")))
     parser.add_argument("--config", type=Path, default=HERE / "config.json")
     parser.add_argument("--model-profile", choices=["coding", "smoke", "hybrid", "hybrid_cpu"])
+    parser.add_argument("--npu-layers", type=int, choices=[2, 3, 4],
+                        help="Manual hybrid smoke only: request 2, 3 or 4 NPU layers; no default change")
     parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
     parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
@@ -616,6 +618,10 @@ def main():
         "smoke" if args.action == "smoke" else "coding")
     if profile not in {"smoke", "coding", "hybrid", "hybrid_cpu"}:
         parser.error("Invalid MODEL_PROFILE; expected coding, smoke, hybrid or hybrid_cpu")
+    try:
+        config = with_smoke_npu_layers(config, args.action, profile, args.npu_layers)
+    except ValueError as error:
+        parser.error(str(error))
     if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
         # Reap abandoned owned workloads before judging whether enough RAM is idle.
         with locked(workspace / "maintainer.lock"):
