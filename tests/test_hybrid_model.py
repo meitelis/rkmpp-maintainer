@@ -88,6 +88,39 @@ class HybridModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires at least one"):
             hybrid_docker_options({**runtime, "npu_layers": 0})
 
+    def test_low_memory_moe_experiment_uses_real_one_layer_q4_npu_only(self):
+        config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        baseline = settings(config, "hybrid")[1]
+        trial = with_smoke_npu_layers(config, "smoke", "hybrid", 1,
+                                      moe=True, moe_efficient=True)
+        runtime = settings(trial, "hybrid")[1]
+        docker_opts, server_opts = hybrid_docker_options(runtime)
+        self.assertIn("RKNPU_HYBRID=W4A16_HADAMARD", docker_opts)
+        self.assertIn("RKNPU_AS_GPU=1", docker_opts)
+        self.assertIn("RKNPU_MOE=1", docker_opts)
+        self.assertEqual(server_opts,
+                         ["-ngl", "1", "--no-kv-offload", "--fit", "off"])
+        self.assertEqual(runtime["memory"], "18g")
+        self.assertTrue(runtime["no_swap"])
+        self.assertEqual(runtime["cpu_set"], baseline["cpu_set"])
+        self.assertEqual(baseline["npu_layers"], 2)
+        self.assertNotIn("RKNPU_AS_GPU=1", hybrid_docker_options(baseline)[0])
+        self.assertNotIn("RKNPU_HYBRID=W4A16_HADAMARD", hybrid_docker_options(baseline)[0])
+        self.assertNotIn("npu_moe_efficient", settings(trial, "hybrid_cpu")[1])
+        self.assertEqual(config["models"]["hybrid"]["runtime"]["npu_layers"], 2)
+        for action, profile, layers, moe in [
+                ("watch", "hybrid", 1, True), ("run", "hybrid", 1, True),
+                ("smoke", "coding", 1, True), ("smoke", "hybrid_cpu", 1, True),
+                ("smoke", "hybrid", 2, True), ("smoke", "hybrid", 1, False)]:
+            with self.subTest(action=action, profile=profile, layers=layers, moe=moe):
+                with self.assertRaises(ValueError):
+                    with_smoke_npu_layers(config, action, profile, layers,
+                                           moe=moe, moe_efficient=True)
+        for bad in (0, 2, "yes"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    hybrid_docker_options({**runtime, "npu_moe_efficient": bad})
+
     def test_moe_logs_differentiate_dispatch_evidence_from_requested_flag(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "model.log"
