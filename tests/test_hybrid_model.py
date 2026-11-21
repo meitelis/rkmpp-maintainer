@@ -31,9 +31,8 @@ class HybridModelTests(unittest.TestCase):
         docker, model = hybrid_docker_options(runtime)
         self.assertIn("/dev/dri/renderD129:/dev/dri/renderD129", docker)
         self.assertIn("nofile=262144:262144", docker)
-        self.assertIn("--mount", docker)
-        self.assertTrue(any("target=/proc/device-tree/compatible" in arg
-                            for arg in docker))
+        self.assertIn("--security-opt", docker)
+        self.assertIn("systempaths=unconfined", docker)
         self.assertNotIn("--privileged", docker)
         self.assertEqual(model, ["-ngl", "2", "--no-kv-offload"])
         for invalid in [-1, 5, True, "2"]:
@@ -108,9 +107,8 @@ class HybridModelTests(unittest.TestCase):
             self.assertEqual(run[run.index("--memory")+1], "18g")
             self.assertEqual(run[run.index("--memory-swap")+1], "18g")
             self.assertIn("--device", run)
-            self.assertIn("--mount", run)
-            self.assertTrue(any("target=/proc/device-tree/compatible" in arg
-                                for arg in run))
+            self.assertIn("--security-opt", run)
+            self.assertIn("systempaths=unconfined", run)
             probes = [x for x in commands if x[:2] == ["docker", "run"]
                       and "--entrypoint" in x]
             self.assertEqual(len(probes), 1)
