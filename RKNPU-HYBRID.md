@@ -121,3 +121,37 @@ Q3 profile remain unchanged. The 18 GiB model and 19 GiB builder ceilings remain
 
 Successful compilation and CI do not establish a successful large Q4 CPU
 inference run: test on the ROCK 5B+ before interpreting timing results.
+
+## Experimental NPU core/layer tuning (November 21)
+
+The pinned RK3588 backend already selects **all three NPU cores (0, 1, 2)**
+when `RKNPU_CORES` is absent, as it is in our container. NPU core count
+and `-ngl` decoder-layer count are independent controls; requesting additional
+layers does **not** turn on an additional NPU core. Verify actual per-core
+hardware load rather than treating requested cores or layers as measured use.
+
+The controller remains on its usual two-layer hybrid configuration and the
+standard CPU coding profile remains unchanged. A **manual smoke only**
+experiment can now request 3 or 4 offloaded layers without altering either
+profile, the 18 GiB no-swap model cap, the 19 GiB builder cap, or the
+pinned GGUF/image:
+
+```sh
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --npu-layers 3 --ignore-window
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --npu-layers 4 --ignore-window
+```
+
+Run the experiments **sequentially**, only after checking the previously
+recorded `model-runtime.json` for real cgroup headroom. The override is
+validated against the original `0..4` RKNN safety bound; requesting 5+
+fails before launching anything. Both tests retain standard source-repair,
+runtime metrics, protected behavioral checks and no-swap enforcement.
+
+For this Qwen MoE model, the pinned backend separately gates expert matmuls
+using `RKNPU_MOE`; that option is currently **not** enabled. First isolate
+the effect of layers with the expert path unchanged. Only consider an
+additional separately controlled experiment after RAM and NPU utilization
+evidence support it, because MoE expert NPU requantization may require more
+memory. A successful repair is necessary, but the decision should use
+prompt/tok/s, generation/tok/s, actual NPU utilization, and memory headroom,
+not wall-clock total or requested layers alone.
