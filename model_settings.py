@@ -22,22 +22,28 @@ def settings(config, name="coding"):
     return spec, runtime, generation
 
 
-def with_smoke_npu_layers(config, action, profile, layers):
-    """Override only a manual hybrid smoke, leaving normal models untouched.
+def with_smoke_npu_layers(config, action, profile, layers, *, moe=False):
+    """Strictly manual, opt-in NPU smoke experiment; no persisted defaults.
 
-    Keep the original 0..4 backend safety bound. Higher counts need real board
-    memory and correctness qualification before expanding this experiment.
+    MoE expert dispatch is riskier than dense offload. Allow the smallest
+    experimental one-layer run first, always with existing no-swap limits.
     """
-    if layers is None:
+    if layers is None and moe is False:
         return config
     if action != "smoke" or profile != "hybrid":
-        raise ValueError("--npu-layers is only allowed for smoke --model-profile hybrid")
-    if type(layers) is not int or layers not in (2, 3, 4):
-        raise ValueError("Experimental NPU layer count must be 2, 3 or 4")
+        raise ValueError("--npu-layers/--npu-moe require smoke --model-profile hybrid")
+    if type(moe) is not bool:
+        raise ValueError("NPU MoE flag must be boolean")
+    if layers is not None and (type(layers) is not int or layers not in (1, 2, 3, 4)):
+        raise ValueError("Experimental NPU layer count must be 1, 2, 3 or 4")
     if "hybrid" not in config.get("models", {}):
         raise ValueError("Missing hybrid model configuration")
     updated = copy.deepcopy(config)
-    updated["models"]["hybrid"].setdefault("runtime", {})["npu_layers"] = layers
+    runtime = updated["models"]["hybrid"].setdefault("runtime", {})
+    if layers is not None:
+        runtime["npu_layers"] = layers
+    if moe:
+        runtime["npu_moe"] = True
     return updated
 
 
@@ -94,7 +100,12 @@ def hybrid_docker_options(runtime):
         raise ValueError("RKNPU2 layers must be an integer from 0 to 4 until hardware qualified")
     if not runtime.get("no_swap"):
         raise ValueError("Hybrid model requires the verified no-swap memory profile")
+    moe = runtime.get("npu_moe", False)
+    if type(moe) is not bool:
+        raise ValueError("RKNPU MoE enablement must be boolean")
     if layers == 0:
+        if moe:
+            raise ValueError("NPU MoE requires at least one offloaded layer")
         return [], ["-ngl", "0", "--no-kv-offload"]
     device = runtime.get("npu_device")
     if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\d+", device) is None:
@@ -103,9 +114,13 @@ def hybrid_docker_options(runtime):
     # matmul context creation, while passing the /dev/dri group succeeds
     # without --privileged. Use the same mapping for probe and model.
     # The configured render device is still validated above.
+    environment = ["-e", "RKNPU_HYBRID=W8A8_STANDARD", "-e", "RKNPU_GLUE=1"]
+    if moe:
+        # Only the explicit manual smoke experiment ever enables GGML_OP_MUL_MAT_ID.
+        # Leave the original quantization pipeline and IOMMU domains unchanged.
+        environment += ["-e", "RKNPU_MOE=1", "-e", "RKNPU_MOE_DBG=1"]
     return (["--device", "/dev/dri:/dev/dri",
              "--security-opt", "systempaths=unconfined",
              "--ulimit", "nofile=262144:262144",
-             "-e", "RKNPU_HYBRID=W8A8_STANDARD",
-             "-e", "RKNPU_GLUE=1"],
+             *environment],
             ["-ngl", str(layers), "--no-kv-offload"])
