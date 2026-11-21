@@ -141,7 +141,7 @@ class Docker:
                     image, "--list-devices"], timeout=60)
                 if re.search(r"(?i)\bRKNPU\b", devices):
                     raise RuntimeError("CPU control image contains RKNPU backend; refusing invalid benchmark")
-            if hybrid and runtime.get("npu_layers", 0) > 0:
+            if hybrid:
                 # --list-devices only proves that the backend was compiled.
                 # Exercise the exact same board-verified /dev/dri mapping
                 # through RKNN matmul context and allocation APIs before even
@@ -209,8 +209,8 @@ class Docker:
                 ["docker", "inspect", name, "--format", "{{.Image}}"], timeout=30),
                 "model_sha256":spec["sha256"], "filename":spec["filename"],
                 "backend": "rknpu2" if hybrid else "cpu",
-                "npu_layers_requested": runtime["npu_layers"] if hybrid else 0,
-                "npu_device_detected": bool(hybrid and runtime["npu_layers"] > 0),
+                "moe_expert_placement": "cpu-mmap" if hybrid else "cpu",
+                "npu_allocation_probe_passed": bool(hybrid),
                 "npu_execution_verified": False,
                 **memory_preflight, **enforced_limits}
             yield endpoint
