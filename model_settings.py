@@ -8,11 +8,9 @@ def settings(config, name="coding"):
     spec = copy.deepcopy(config.get("models", {}).get("hybrid" if name == "hybrid_cpu" else name, {}))
     runtime = {**config.get("model_runtime", {}), **spec.pop("runtime", {})}
     if name == "hybrid_cpu":
-        # Use the identical pinned fork and GGUF, but compile without RKNN.
-        # The RKNPU-enabled binary still initializes its device with -ngl 0,
-        # so disabling layer offload alone is NOT a valid CPU baseline.
+        # Matched pure-CPU Q4 control: same GGUF, pinned source, RKNN disabled.
+        # -ngl 0 on an RKNN-enabled binary is not an adequate CPU control.
         runtime["backend"] = "cpu"
-        runtime["npu_layers"] = 0
     generation = copy.deepcopy(config.get("generation", {}))
     override = spec.pop("generation", {})
     chat = {**generation.get("chat_template_kwargs", {}), **override.get("chat_template_kwargs", {})}
@@ -66,27 +64,38 @@ def validated_existing_model(spec, workspace):
 
 
 def hybrid_docker_options(runtime):
-    """Explicit, bounded CPU+NPU requests; never silently run CPU only."""
+    """Single-board RK3588 MoE: mmap experts on CPU, eligible dense matmuls on NPU.
+
+    The pinned backend exposes RKNPU as an ACCEL device, not a GPU, and
+    advertises zero VRAM. The old -ngl 2/3 requests therefore did not control
+    the number of NPU layers; llama.cpp warned that they were ignored.
+    Do not reintroduce fake layer accounting or NPU expert allocations.
+    """
     import re
     if runtime.get("backend") != "rknpu2":
         return [], []
-    layers = runtime.get("npu_layers")
-    if type(layers) is not int or not 0 <= layers <= 4:
-        raise ValueError("RKNPU2 layers must be an integer from 0 to 4 until hardware qualified")
     if not runtime.get("no_swap"):
-        raise ValueError("Hybrid model requires the verified no-swap memory profile")
-    if layers == 0:
-        return [], ["-ngl", "0", "--no-kv-offload"]
+        raise ValueError("RK3588 MoE model requires the verified no-swap memory profile")
+    if any(key in runtime for key in ("npu_layers", "npu_moe", "npu_moe_efficient")):
+        raise ValueError("Obsolete/unqualified NPU layer or expert overrides are forbidden")
     device = runtime.get("npu_device")
     if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\d+", device) is None:
-        raise ValueError("Hybrid model requires an explicit DRM render device")
-    # Board-verified on ROCK 5B+: granting only renderD129 fails RKNN
-    # matmul context creation, while passing the /dev/dri group succeeds
-    # without --privileged. Use the same mapping for probe and model.
-    # The configured render device is still validated above.
-    return (["--device", "/dev/dri:/dev/dri",
-             "--security-opt", "systempaths=unconfined",
-             "--ulimit", "nofile=262144:262144",
-             "-e", "RKNPU_HYBRID=W8A8_STANDARD",
-             "-e", "RKNPU_GLUE=1"],
-            ["-ngl", str(layers), "--no-kv-offload"])
+        raise ValueError("RK3588 MoE requires an explicit DRM render device")
+
+    # ROCK 5B+ probe verified the /dev/dri group (single renderD129 failed).
+    # RKNN uses system RAM through DMA/IOMMU, not discrete VRAM. Repack and
+    # NPU expert allocations caused an 18 GiB cgroup OOM on this board.
+    # --cpu-moe overrides expert tensors to CPU; --no-repack leaves their
+    # GGUF Q4_0 weights mmap-backed, so inactive experts can be reclaimed.
+    # ACCEL still competes for eligible *non-expert* weight tensors.
+    docker_options = [
+        "--device", "/dev/dri:/dev/dri",
+        "--security-opt", "systempaths=unconfined",
+        "--ulimit", "nofile=262144:262144",
+        "-e", "RKNPU_HYBRID=W8A8_STANDARD",
+        "-e", "RKNPU_GLUE=1",
+    ]
+    model_flags = [
+        "--cpu-moe", "--no-repack", "--fit", "off", "--no-kv-offload",
+    ]
+    return docker_options, model_flags
