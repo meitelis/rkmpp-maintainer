@@ -94,11 +94,11 @@ class HybridModelTests(unittest.TestCase):
             self.assertEqual(inspect_moe_dispatch_log(path),
                              {"expert_batch_path_observed": False,
                               "expert_batch_log_lines": 0, "model_log_available": False})
-            path.write_text("loaded RKNPU backend\\nno expert dispatch\\n")
+            path.write_text("loaded RKNPU backend\nno expert dispatch\n")
             self.assertFalse(inspect_moe_dispatch_log(path)["expert_batch_path_observed"])
-            path.write_text("[moe-batch] K=1 N=2\\n"
-                            "other logging\\n"
-                            "[moe-batch] K=1 N=2\\n")
+            path.write_text("[moe-batch] K=1 N=2\n"
+                            "other logging\n"
+                            "[moe-batch] K=1 N=2\n")
             evidence = inspect_moe_dispatch_log(path)
             self.assertTrue(evidence["expert_batch_path_observed"])
             self.assertEqual(evidence["expert_batch_log_lines"], 2)
