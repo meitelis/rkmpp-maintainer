@@ -625,6 +625,8 @@ def main():
                         help="Manual hybrid smoke only: request 1–4 NPU layers; no default change")
     parser.add_argument("--npu-moe", action="store_true",
                         help="Manual hybrid smoke only: experimentally enable NPU MoE expert matmuls")
+    parser.add_argument("--npu-moe-efficient", action="store_true",
+                        help="Manual hybrid smoke only: with --npu-moe --npu-layers 1, use Q4 NPU weights and genuine bounded offload")
     parser.add_argument("--wait-for-window", action="store_true", help="Wait for the night/idle admission gate")
     parser.add_argument("--ignore-window", action="store_true", help="Explicit manual override of night/idle admission")
     args = parser.parse_args()
@@ -641,7 +643,8 @@ def main():
     if profile not in {"smoke", "coding", "hybrid", "hybrid_cpu"}:
         parser.error("Invalid MODEL_PROFILE; expected coding, smoke, hybrid or hybrid_cpu")
     try:
-        config = with_smoke_npu_layers(config, args.action, profile, args.npu_layers, moe=args.npu_moe)
+        config = with_smoke_npu_layers(config, args.action, profile, args.npu_layers,
+                                       moe=args.npu_moe, moe_efficient=args.npu_moe_efficient)
     except ValueError as error:
         parser.error(str(error))
     if config.get("work_window", {}).get("enabled", False) and args.action in {"runtime-check", "smoke", "run", "once"}:
