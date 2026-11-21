@@ -194,3 +194,48 @@ decode/prompt throughput and safe memory headroom, compare a **matched**
 one-layer run without `--npu-moe` to isolate the expert acceleration effect.
 Only then consider 2-layer MoE. Full correctness requires more than the
 small source-repair smoke; keep the automatic maintenance default unchanged.
+
+## November 21: OOM and correcting the offload accounting
+
+A one-layer MoE smoke using the original `RKNPU_MOE=1` and
+`RKNPU_HYBRID=W8A8_STANDARD` failed in model initialization:
+`OOMKilled=true`, exit 137, after reaching 18 GiB (18g) model cgroup
+limit with no swap. The builder is separately capped at 19 GiB. This was
+**container-level OOM**, not proof that the full 24 GB ROCK 5B+ exhausted
+physical RAM. Other services account for about 4 GB on the host, but
+raising only the inner limit would not escape the nested 19 GiB ceiling.
+
+Source review also showed a correctness caveat to our old benchmarking:
+this pinned backend exposes RKNPU as `GGML_BACKEND_DEVICE_TYPE_ACCEL`
+by default, reporting zero NPU device memory, so `--gpu-layers/-ngl`
+prints a **GPU layers ignored** warning. ACCEL-buffer placement may still
+execute NPU matmuls; that warning does not prove NPU inactivity, but
+requests for 2 vs 3 NPU layers are **not evidence of different actual
+offloaded layer counts**. Do not optimize layer counts from those figures
+without confirming placement and actual per-core load.
+
+For a single, independent experiment, a new opt-in
+`--npu-moe-efficient` (requires `--npu-moe --npu-layers 1`, manual
+hybrid smoke only) combines:
+
+- `RKNPU_AS_GPU=1`: classify Rockchip as GPU, making `-ngl 1` a
+  meaningful layer-allocation request rather than the ignored ACCEL
+  interpretation. Keep `--no-kv-offload --fit off` to avoid unsupported
+  NPU KV allocation and unpredictable fit adjustments.
+- `RKNPU_HYBRID=W4A16_HADAMARD`: supported INT4 **weights**, FP16
+  **activations** and Hadamard path, instead of the former INT8-weight
+  `W8A8_STANDARD`. This may reduce NPU expert-weight allocations
+  substantially but numerical quality and actual RAM use remain untested.
+- Same pinned GGUF, model image, NPU matmul probe, 18 GiB RAM+swap/no-swap,
+  19 GiB builder ceiling, no custom IOMMU domains, no unattended jobs.
+
+```sh
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile hybrid --npu-layers 1 --npu-moe --npu-moe-efficient --ignore-window
+```
+
+This is a *risk-contained hardware experiment*, not a confirmed fix:
+startup can still OOM, the NPU backend may reject some tensors, and
+4-bit re-quantization can compromise accuracy. Compare actual successful
+model logs for offloaded count, `npu_moe_evidence`, RSS/cgroup and
+`/sys/kernel/debug/rknpu/load`, plus repair correctness and speed.
+Never increase memory ceilings automatically if it fails.
