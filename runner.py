@@ -88,20 +88,28 @@ class Docker:
             yield endpoint.rstrip("/")
             return
         self.verify()
-        spec, runtime, _ = settings(self.config, profile or ("smoke" if smoke else "coding"))
+        selected_profile = profile or ("smoke" if smoke else "coding")
+        spec, runtime, _ = settings(self.config, selected_profile)
         memory_preflight = require_model_memory(self.config, spec, runtime)
         name = "rkmpp-maintainer-model"
         # Only touch this stack's transient model in its own daemon.
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
         hybrid = runtime.get("backend") == "rknpu2"
+        cpu_control = selected_profile == "hybrid_cpu"
         if runtime.get("backend", "cpu") not in {"cpu", "rknpu2"}:
             raise ValueError("Unknown model backend")
-        image = self.config["rknpu_image"] if hybrid else self.config["llama_image"]
+        image = (self.config["rknpu_image"] if hybrid else
+                 self.config["cpu_control_image"] if cpu_control else
+                 self.config["llama_image"])
         threads = str(runtime.get("threads", 4))
         docker_options = ["--oom-score-adj","1000"]
         npu_docker, npu_flags = hybrid_docker_options(runtime)
         docker_options += npu_docker
+        if cpu_control:
+            # A zero-layer request to the RKNN-enabled fork still accesses
+            # the NPU on this board. Only an RKNN-disabled build is CPU-only.
+            npu_flags = ["-ngl", "0", "--no-kv-offload"]
         if runtime.get("cpu_set"):
             docker_options += ["--cpuset-cpus", runtime["cpu_set"]]
         if runtime.get("no_swap"):
@@ -113,15 +121,27 @@ class Docker:
                             ("cache_ram","--cache-ram"), ("context_checkpoints","--ctx-checkpoints")]:
             if field in runtime:
                 model_options += [flag, str(runtime[field])]
-        if hybrid:
-            # Build the pinned runtime once in our existing isolated builder.
+        if hybrid or cpu_control:
+            # Build two variants of the same pinned source in the existing
+            # isolated builder. The control is compiled with RKNN disabled.
             try:
                 command(["docker", "image", "inspect", image], timeout=20)
             except RuntimeError:
                 source = Path(__file__).resolve().parent
+                build_options = (["--build-arg", "LLAMA_RKNPU2=OFF"]
+                                 if cpu_control else [])
                 command(["docker", "build", "-f", str(source / "Dockerfile.rknpu2"),
-                         "-t", image, str(source)], timeout=3600)
-            if runtime.get("npu_layers", 0) > 0:
+                         *build_options, "-t", image, str(source)], timeout=3600)
+            if cpu_control:
+                # Fail closed if the supposedly CPU-only binary advertises
+                # an RKNPU backend. No /dev/dri is passed to this container.
+                devices = command([
+                    "docker", "run", "--rm", "--network", "none",
+                    "--entrypoint", "/opt/llama/bin/llama-server",
+                    image, "--list-devices"], timeout=60)
+                if re.search(r"(?i)\bRKNPU\b", devices):
+                    raise RuntimeError("CPU control image contains RKNPU backend; refusing invalid benchmark")
+            if hybrid and runtime.get("npu_layers", 0) > 0:
                 # --list-devices only proves that the backend was compiled.
                 # Exercise the exact same board-verified /dev/dri mapping
                 # through RKNN matmul context and allocation APIs before even
