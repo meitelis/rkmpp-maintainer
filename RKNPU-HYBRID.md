@@ -182,6 +182,12 @@ simultaneously or while another NPU-heavy workload is running. Inspect
 `model-runtime.json` and the model log, and monitor actual NPU core load
 during inference (where readable: `/sys/kernel/debug/rknpu/load`).
 
+The smoke result also records `npu_moe_evidence`: a count of
+`[moe-batch]` backend log lines and whether the model log was captured.
+This confirms the *expert-batching code path* was entered during prefill,
+not NPU core execution or numerical correctness. No dispatch evidence means
+the experiment did not establish an active MoE offload.
+
 If the one-layer trial fails or memory use is excessive, stop—not increase
 RAM or offload layers. If it completes correctly with materially better
 decode/prompt throughput and safe memory headroom, compare a **matched**
