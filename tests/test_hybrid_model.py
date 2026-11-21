@@ -20,13 +20,13 @@ class HybridModelTests(unittest.TestCase):
         self.assertNotEqual(cpu.get("backend"), "rknpu2")
         self.assertEqual(cpu["memory"], "17g")
         self.assertEqual(hybrid["backend"], "rknpu2")
-        self.assertEqual(hybrid["npu_layers"], 2)
+        self.assertNotIn("npu_layers", hybrid)
         self.assertTrue(hybrid["no_swap"])
         self.assertEqual(model["bytes"], 17304492352)
         self.assertTrue(model["filename"].endswith("Q4_0.gguf"))
 
     def test_hybrid_options_are_bounded_and_explicit(self):
-        runtime = {"backend": "rknpu2", "npu_layers": 2,
+        runtime = {"backend": "rknpu2",
                    "npu_device": "/dev/dri/renderD129", "no_swap": True}
         docker, model = hybrid_docker_options(runtime)
         self.assertIn("/dev/dri:/dev/dri", docker)
@@ -35,11 +35,16 @@ class HybridModelTests(unittest.TestCase):
         self.assertIn("--security-opt", docker)
         self.assertIn("systempaths=unconfined", docker)
         self.assertNotIn("--privileged", docker)
-        self.assertEqual(model, ["-ngl", "2", "--no-kv-offload"])
-        for invalid in [-1, 5, True, "2"]:
-            with self.subTest(invalid=invalid):
-                with self.assertRaises(ValueError):
-                    hybrid_docker_options({**runtime, "npu_layers": invalid})
+        self.assertEqual(model, ["--cpu-moe", "--no-repack", "--fit", "off", "--no-kv-offload"])
+        self.assertIn("RKNPU_HYBRID=W8A8_STANDARD", docker)
+        self.assertNotIn("RKNPU_MOE=1", docker)
+        self.assertNotIn("RKNPU_AS_GPU=1", docker)
+        self.assertNotIn("-ngl", model)
+        # Any attempts to resurrect unverified experimental NPU knobs are rejected.
+        for obsolete in ("npu_layers", "npu_moe", "npu_moe_efficient"):
+            with self.subTest(obsolete=obsolete):
+                with self.assertRaisesRegex(ValueError, "Obsolete"):
+                    hybrid_docker_options({**runtime, obsolete: 1})
         with self.assertRaises(ValueError):
             hybrid_docker_options({**runtime, "npu_device": "/dev/dri/../mem"})
         with self.assertRaises(ValueError):
@@ -53,7 +58,7 @@ class HybridModelTests(unittest.TestCase):
         self.assertEqual(cpu_runtime["backend"], "cpu")
         self.assertEqual(cpu_runtime["memory"], npu_runtime["memory"])
         self.assertEqual(cpu_runtime["context_size"], npu_runtime["context_size"])
-        self.assertEqual(cpu_runtime["npu_layers"], 0)
+        self.assertNotIn("npu_layers", cpu_runtime)
         device_opts, flags = hybrid_docker_options(cpu_runtime)
         self.assertEqual(device_opts, [])
         self.assertEqual(flags, [])
@@ -66,7 +71,7 @@ class HybridModelTests(unittest.TestCase):
                     "model_runtime": {"memory": "12g", "threads": 4},
                     "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
                         "sha256": "x", "runtime": {"backend": "rknpu2", "memory": "18g",
-                        "no_swap": True, "npu_layers": 2, "cpu_set": "4-7",
+                        "no_swap": True, "cpu_set": "4-7",
                         "npu_device": "/dev/dri/renderD129"}}}}
             commands = []
             def run_command(args, **kwargs):
@@ -108,7 +113,7 @@ class HybridModelTests(unittest.TestCase):
                     "cpu_control_image": "local/cpu-test",
                     "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
                         "sha256": "x", "runtime": {"backend": "rknpu2",
-                        "memory": "18g", "no_swap": True, "npu_layers": 2}}}}
+                        "memory": "18g", "no_swap": True}}}}
             def run_command(args, **kwargs):
                 if "--list-devices" in args:
                     return "Available devices: RKNPU"
@@ -148,7 +153,7 @@ class HybridModelTests(unittest.TestCase):
                     "model_runtime": {"memory": "12g", "threads": 4},
                     "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
                         "sha256": "x", "runtime": {"backend": "rknpu2", "memory": "18g",
-                        "no_swap": True, "npu_layers": 2, "cpu_set": "4-7",
+                        "no_swap": True, "cpu_set": "4-7",
                         "npu_device": "/dev/dri/renderD129"}}}}
             docker = Docker(conf, temp)
             commands = []
@@ -183,16 +188,22 @@ class HybridModelTests(unittest.TestCase):
             self.assertIn("/opt/llama/bin/rknpu-probe", probes[0])
             self.assertEqual(probes[0][probes[0].index("--device") + 1], "/dev/dri:/dev/dri")
             self.assertIn("--no-kv-offload", run)
-            self.assertEqual(run[run.index("-ngl")+1], "2")
+            self.assertNotIn("-ngl", run)
+            self.assertIn("--cpu-moe", run)
+            self.assertIn("--no-repack", run)
+            self.assertIn("--fit", run)
+            self.assertEqual(run[run.index("--fit") + 1], "off")
             self.assertIn("RKNPU_GLUE=1", run)
             self.assertIn("rknpu-image", run)
             self.assertEqual(docker.model_evidence["npu_execution_verified"], False)
+            self.assertEqual(docker.model_evidence["moe_expert_placement"], "cpu-mmap")
+            self.assertTrue(docker.model_evidence["npu_allocation_probe_passed"])
 
     def test_missing_npu_device_aborts_before_server_starts(self):
         conf = {"rknpu_image": "rknpu-image",
                 "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
                     "sha256": "x", "runtime": {"backend": "rknpu2", "memory": "18g",
-                    "no_swap": True, "npu_layers": 2,
+                    "no_swap": True,
                     "npu_device": "/dev/dri/renderD129"}}}}
         with tempfile.TemporaryDirectory() as temp:
             commands = []
