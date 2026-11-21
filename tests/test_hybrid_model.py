@@ -31,6 +31,10 @@ class HybridModelTests(unittest.TestCase):
         docker, model = hybrid_docker_options(runtime)
         self.assertIn("/dev/dri/renderD129:/dev/dri/renderD129", docker)
         self.assertIn("nofile=262144:262144", docker)
+        self.assertIn("--mount", docker)
+        self.assertTrue(any("target=/proc/device-tree/compatible" in arg
+                            for arg in docker))
+        self.assertNotIn("--privileged", docker)
         self.assertEqual(model, ["-ngl", "2", "--no-kv-offload"])
         for invalid in [-1, 5, True, "2"]:
             with self.subTest(invalid=invalid):
@@ -86,8 +90,8 @@ class HybridModelTests(unittest.TestCase):
                 commands.append(args)
                 if args[:2] == ["docker", "exec"]:
                     return "memory.max=19327352832\nmemory.swap.max=0\n"
-                if args[:2] == ["docker", "run"] and "--list-devices" in args:
-                    return "Available devices: RKNPU: Rockchip NPU"
+                if args[:2] == ["docker", "run"] and "--entrypoint" in args:
+                    return "RKNPU_PROBE_OK"
                 return ""
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
                  patch.object(docker, "verify"), \
@@ -104,6 +108,13 @@ class HybridModelTests(unittest.TestCase):
             self.assertEqual(run[run.index("--memory")+1], "18g")
             self.assertEqual(run[run.index("--memory-swap")+1], "18g")
             self.assertIn("--device", run)
+            self.assertIn("--mount", run)
+            self.assertTrue(any("target=/proc/device-tree/compatible" in arg
+                                for arg in run))
+            probes = [x for x in commands if x[:2] == ["docker", "run"]
+                      and "--entrypoint" in x]
+            self.assertEqual(len(probes), 1)
+            self.assertIn("/opt/llama/bin/rknpu-probe", probes[0])
             self.assertIn("--no-kv-offload", run)
             self.assertEqual(run[run.index("-ngl")+1], "2")
             self.assertIn("RKNPU_GLUE=1", run)
@@ -120,12 +131,14 @@ class HybridModelTests(unittest.TestCase):
             commands = []
             def run_command(args, **kwargs):
                 commands.append(args)
-                return "Available devices: CPU" if "--list-devices" in args else ""
+                if "--entrypoint" in args:
+                    raise RuntimeError("RKNN failed to open rknpu device")
+                return ""
             with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \
                  patch.object(Docker, "verify"), \
                  patch("runner.require_model_memory", return_value={}), \
                  patch("runner.download_model", return_value=Path(temp)/"q4.gguf"), \
                  patch("runner.command", side_effect=run_command):
-                with self.assertRaisesRegex(RuntimeError, "RKNPU backend/device not detected"):
+                with self.assertRaisesRegex(RuntimeError, "NPU preflight failed before model loading"):
                     with Docker(conf,temp).model(profile="hybrid"): pass
             self.assertFalse(any(x[:3] == ["docker", "run", "-d"] for x in commands))
