@@ -73,7 +73,7 @@ Disable image re-pulling for the locally built maintainer image. It is `local/rk
 
 Deploy the stack. Its control should show **Total**, with a healthy builder and running maintainer. No host Docker socket or host ports are mounted/published by this stack. The builder remains privileged, as in the tested prototype, and is intended for these trusted source repositories.
 
-**RK3588 CPU + NPU (opt-in):** An experimental `hybrid` profile uses pinned Qwen3-Coder Q4_0 with two RKNPU-offloaded layers and the KV cache on CPU, within the **existing** Docker builder. The default `coding` CPU profile is unchanged. See [the exact setup, tests and restrictions](RKNPU-HYBRID.md); no NPU speedup or real upgrade success is claimed until the board passes the paired benchmark.
+**RK3588 execution decision:** The default `coding` profile is **CPU-only Qwen3-Coder Q4_0 at 16K context**, using the exact pinned RKNN-disabled llama.cpp build that passed the board's Q4 CPU smoke test. Both tried RKNPU hybrid variants were slower. They remain opt-in diagnostic profiles, **not** the default. See [the measured hardware decision](RKNPU-HYBRID.md).
 
 ## Run tests from Portainer
 
@@ -86,7 +86,7 @@ python3 /opt/maintainer/maintainer.py runtime-check --wait-for-window
 python3 /opt/maintainer/maintainer.py smoke --wait-for-window
 ```
 
-Coding uses **Qwen3-Coder-30B-A3B-Instruct Q3_K_L** (14,583,005,504 bytes), pinned to LM Studio Community's exact revision and SHA-256. This coding-specific MoE has 30.5B total parameters and 3.3B active per token; fewer active parameters may improve CPU inference, but board measurements and protected repair checks decide qualification. Q3 quantization trades accuracy for memory headroom and must pass the same gates. The Radxa profile selects cores 4–7, four inference/prompt threads, a 16K context, Q8 KV caches with flash attention, bounded batching and a 17 GiB memory ceiling with swap disabled. With the 1 GiB host reserve, model startup requires 18 GiB available. The model container now checks its actual cgroup v1/v2 RAM and swap limits and refuses startup if the kernel does not enforce them. Prompt cache is capped at 256 MiB and context checkpoints at four. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20 and repeat penalty 1.05. The model unloads before compilation.
+Coding uses **Qwen3-Coder-30B-A3B-Instruct Q4_0** (17,304,492,352 bytes), pinned to the exact GGUF revision and SHA-256 already qualified on the 24 GiB ROCK 5B+. It reuses the existing `/workspace/experiments/coder-rknpu2-20261119/coder-q4.gguf` after SHA-256 verification rather than downloading another 17 GB file. The server uses the **same RKNN-disabled binary** as the successful matched `hybrid_cpu` Q4 benchmark. It pins four Cortex-A76 cores (4–7), 16,384-token context, four inference/prompt threads, Q8_0 KV caches, flash attention, and bounded 128/64 batching. Its model cgroup is **18 GiB with no swap**, the existing Docker-in-Docker builder is **19 GiB with no swap**, and the host admission gate reserves another 1 GiB (thus 19 GiB MemAvailable is required to start a job). The model container verifies enforced memory/swap cgroups before serving. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20, repeat penalty 1.05, and a 4096-token output cap. The model unloads before compilation. Unlike the previous Q3 settings, this exact Q4 benchmark configuration does not request prompt-cache/checkpoint overrides.
 
 The dense Qwen3.8-27B profile passed the small repair after cache tuning, then timed out on the larger Memories review on the Radxa. That result does not establish unattended-upgrade suitability. Its cached weights and failed-run evidence are retained.
 
@@ -99,7 +99,7 @@ python3 /opt/maintainer/maintainer.py smoke --model-profile coding --wait-for-wi
 python3 /opt/maintainer/repair_check.py --model-profile coding --wait-for-window
 ```
 
-The coding model sources are [Qwen's official coding-model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) and the [pinned GGUF file](https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/blob/1f4ceb1041258b3fbfe59e1175d1321c6b41863b/Qwen3-Coder-30B-A3B-Instruct-Q3_K_L.gguf).
+The coding model sources are [Qwen's official coding-model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) and the [pinned Q4_0 GGUF file](https://huggingface.co/n00b001/Qwen3-Coder-30B-A3B-Instruct-Q4_0-GGUF/blob/6f416a66beacce7c45fce4a663b2a7d5ad00e0c0/qwen3-coder-30b-a3b-instruct-q4_0.gguf).
 
 For the historical Memories upgrade:
 
@@ -115,7 +115,7 @@ Successful upgrade jobs now report **`status: built`**, **`review_status: pendin
 
 Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
 
-Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. NPU hardware matrix work has been observed in standalone board experiments, but the maintainer's hybrid model workload remains unqualified.
+Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. The Q4 CPU-only 16K smoke `smoke-9c7b3557` completed a protected repair with 14.94 prompt / 6.23 generation tok/s, 17.13 GiB peak model memory, no OOM, against 4K Q4 CPU's 15.21 / 6.29 tok/s and 16.50 GiB. Previous hybrid and CPU-mapped expert hybrid were slower (4.41 and 4.33 generation tok/s). These figures qualify the **short smoke task**, not near-full 16K prompts or unattended release upgrades.
 
 ## Overnight admission
 
