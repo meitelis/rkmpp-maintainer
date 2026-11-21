@@ -81,7 +81,6 @@
         "threads": 4,
         "threads_batch": 4,
         "cpu_set": "4-7",
-        "npu_layers": 2,
         "npu_device": "/dev/dri/renderD129",
         "batch_size": 128,
         "ubatch_size": 64,
