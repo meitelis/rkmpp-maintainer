@@ -45,18 +45,84 @@ class HybridModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             hybrid_docker_options({**runtime, "no_swap": False})
 
-    def test_cpu_control_uses_same_q4_model_backend_and_only_disables_offload(self):
+    def test_cpu_control_uses_same_q4_model_with_cpu_only_compilation(self):
         config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
         npu_model, npu_runtime, _ = settings(config, "hybrid")
         cpu_model, cpu_runtime, _ = settings(config, "hybrid_cpu")
         self.assertEqual(cpu_model, npu_model)
-        self.assertEqual(cpu_runtime["backend"], "rknpu2")
+        self.assertEqual(cpu_runtime["backend"], "cpu")
         self.assertEqual(cpu_runtime["memory"], npu_runtime["memory"])
         self.assertEqual(cpu_runtime["context_size"], npu_runtime["context_size"])
         self.assertEqual(cpu_runtime["npu_layers"], 0)
         device_opts, flags = hybrid_docker_options(cpu_runtime)
         self.assertEqual(device_opts, [])
-        self.assertEqual(flags, ["-ngl", "0", "--no-kv-offload"])
+        self.assertEqual(flags, [])
+        self.assertIn("cpu_control_image", config)
+
+    def test_cpu_control_does_not_request_rknpu_or_enable_backend(self):
+        with tempfile.TemporaryDirectory() as temp:
+            conf = {"llama_image": "default-cpu-image", "rknpu_image": "hybrid-image",
+                    "cpu_control_image": "local/rkmpp-llama-cpu:test",
+                    "model_runtime": {"memory": "12g", "threads": 4},
+                    "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
+                        "sha256": "x", "runtime": {"backend": "rknpu2", "memory": "18g",
+                        "no_swap": True, "npu_layers": 2, "cpu_set": "4-7",
+                        "npu_device": "/dev/dri/renderD129"}}}}
+            commands = []
+            def run_command(args, **kwargs):
+                commands.append(args)
+                if args[:3] == ["docker", "image", "inspect"]:
+                    raise RuntimeError("no image: build required")
+                if args[:2] == ["docker", "run"] and "--list-devices" in args:
+                    return "Available devices: CPU"
+                if args[:2] == ["docker", "exec"]:
+                    return "memory.max=19327352832\\nmemory.swap.max=0\\n"
+                return ""
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
+                 patch.object(Docker, "verify"), \\
+                 patch("runner.require_model_memory", return_value={}), \\
+                 patch("runner.download_model", return_value=Path(temp)/"models/q4.gguf"), \\
+                 patch("runner.command", side_effect=run_command), \\
+                 patch("runner.urllib.request.urlopen") as health:
+                health.return_value.__enter__.return_value = SimpleNamespace(status=200)
+                with Docker(conf, temp).model(profile="hybrid_cpu") as endpoint:
+                    self.assertEqual(endpoint, "http://builder:8080")
+            builds = [a for a in commands if a[:2] == ["docker", "build"]]
+            self.assertEqual(len(builds), 1)
+            self.assertEqual(builds[0][builds[0].index("--build-arg")+1], "LLAMA_RKNPU2=OFF")
+            self.assertIn("local/rkmpp-llama-cpu:test", builds[0])
+            runs = [a for a in commands if a[:3] == ["docker", "run", "-d"]]
+            self.assertEqual(len(runs), 1)
+            run = runs[0]
+            self.assertIn("local/rkmpp-llama-cpu:test", run)
+            self.assertIn("--no-kv-offload", run)
+            self.assertEqual(run[run.index("-ngl")+1], "0")
+            self.assertNotIn("--device", run)
+            self.assertNotIn("--privileged", run)
+            self.assertNotIn("RKNPU_GLUE=1", run)
+            self.assertFalse(any("/rknpu-probe" in " ".join(a) for a in commands))
+
+    def test_cpu_control_refuses_npu_compiled_image_before_hashing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            conf = {"llama_image": "default-cpu-image", "rknpu_image": "hybrid-image",
+                    "cpu_control_image": "local/cpu-test",
+                    "models": {"hybrid": {"filename": "q4.gguf", "bytes": 1,
+                        "sha256": "x", "runtime": {"backend": "rknpu2",
+                        "memory": "18g", "no_swap": True, "npu_layers": 2}}}}
+            def run_command(args, **kwargs):
+                if "--list-devices" in args:
+                    return "Available devices: RKNPU"
+                return ""
+            with patch.dict(os.environ, {"MODEL_ENDPOINT": ""}), \\
+                 patch.object(Docker, "verify"), \\
+                 patch("runner.require_model_memory", return_value={}), \\
+                 patch("runner.download_model") as download, \\
+                 patch("runner.validated_existing_model") as existing, \\
+                 patch("runner.command", side_effect=run_command):
+                with self.assertRaisesRegex(RuntimeError, "CPU control image contains RKNPU"):
+                    with Docker(conf, temp).model(profile="hybrid_cpu"): pass
+                download.assert_not_called()
+                existing.assert_not_called()
 
     def test_reuse_requires_correct_model_bytes_and_sha(self):
         with tempfile.TemporaryDirectory() as directory:
