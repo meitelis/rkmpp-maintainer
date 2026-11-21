@@ -13,17 +13,28 @@ from runner import Docker
 
 
 class HybridModelTests(unittest.TestCase):
-    def test_default_coding_remains_cpu_and_hybrid_is_pinned_q4_0(self):
+    def test_default_coding_is_the_hardware_verified_q4_cpu_16k(self):
         config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
-        _, cpu, _ = settings(config, "coding")
-        model, hybrid, _ = settings(config, "hybrid")
-        self.assertNotEqual(cpu.get("backend"), "rknpu2")
-        self.assertEqual(cpu["memory"], "17g")
-        self.assertEqual(hybrid["backend"], "rknpu2")
-        self.assertEqual(hybrid["npu_layers"], 2)
-        self.assertTrue(hybrid["no_swap"])
+        model, cpu, generation = settings(config, "coding")
+        control_model, control, _ = settings(config, "hybrid_cpu")
+        _, hybrid, _ = settings(config, "hybrid")
+        self.assertEqual(model, control_model)
         self.assertEqual(model["bytes"], 17304492352)
         self.assertTrue(model["filename"].endswith("Q4_0.gguf"))
+        self.assertEqual(model["sha256"], "cb55db3283b0b3790c8bf0b976ce0b09f64d182611e89703186c383c090825c4")
+        self.assertEqual(cpu["backend"], "cpu")
+        self.assertEqual(cpu["memory"], "18g")
+        self.assertTrue(cpu["no_swap"])
+        self.assertEqual(cpu["context_size"], 16384)
+        self.assertEqual(cpu["cpu_set"], "4-7")
+        self.assertEqual(cpu["threads"], 4)
+        self.assertEqual(cpu["cache_type_k"], "q8_0")
+        self.assertEqual(cpu["cache_type_v"], "q8_0")
+        self.assertEqual(control["backend"], "cpu")
+        self.assertEqual(control["memory"], "18g")
+        self.assertEqual(generation["max_tokens"], 4096)
+        self.assertEqual(hybrid["backend"], "rknpu2")
+        self.assertEqual(hybrid["npu_layers"], 2)
 
     def test_hybrid_options_are_bounded_and_explicit(self):
         runtime = {"backend": "rknpu2", "npu_layers": 2,
