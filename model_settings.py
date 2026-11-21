@@ -14,6 +14,7 @@ def settings(config, name="coding"):
         runtime["backend"] = "cpu"
         runtime["npu_layers"] = 0
         runtime.pop("npu_moe", None)
+        runtime.pop("npu_moe_efficient", None)
     generation = copy.deepcopy(config.get("generation", {}))
     override = spec.pop("generation", {})
     chat = {**generation.get("chat_template_kwargs", {}), **override.get("chat_template_kwargs", {})}
@@ -23,18 +24,20 @@ def settings(config, name="coding"):
     return spec, runtime, generation
 
 
-def with_smoke_npu_layers(config, action, profile, layers, *, moe=False):
+def with_smoke_npu_layers(config, action, profile, layers, *, moe=False, moe_efficient=False):
     """Strictly manual, opt-in NPU smoke experiment; no persisted defaults.
 
     MoE expert dispatch is riskier than dense offload. Allow the smallest
     experimental one-layer run first, always with existing no-swap limits.
     """
-    if layers is None and moe is False:
+    if layers is None and moe is False and moe_efficient is False:
         return config
     if action != "smoke" or profile != "hybrid":
         raise ValueError("--npu-layers/--npu-moe require smoke --model-profile hybrid")
-    if type(moe) is not bool:
-        raise ValueError("NPU MoE flag must be boolean")
+    if type(moe) is not bool or type(moe_efficient) is not bool:
+        raise ValueError("NPU MoE flags must be boolean")
+    if moe_efficient and (not moe or layers != 1):
+        raise ValueError("--npu-moe-efficient requires --npu-moe --npu-layers 1")
     if layers is not None and (type(layers) is not int or layers not in (1, 2, 3, 4)):
         raise ValueError("Experimental NPU layer count must be 1, 2, 3 or 4")
     if "hybrid" not in config.get("models", {}):
@@ -45,6 +48,8 @@ def with_smoke_npu_layers(config, action, profile, layers, *, moe=False):
         runtime["npu_layers"] = layers
     if moe:
         runtime["npu_moe"] = True
+    if moe_efficient:
+        runtime["npu_moe_efficient"] = True
     return updated
 
 
@@ -104,6 +109,9 @@ def hybrid_docker_options(runtime):
     moe = runtime.get("npu_moe", False)
     if type(moe) is not bool:
         raise ValueError("RKNPU MoE enablement must be boolean")
+    efficient = runtime.get("npu_moe_efficient", False)
+    if type(efficient) is not bool or (efficient and (not moe or layers != 1)):
+        raise ValueError("Efficient MoE only supports one offloaded layer with expert dispatch")
     if layers == 0:
         if moe:
             raise ValueError("NPU MoE requires at least one offloaded layer")
@@ -115,7 +123,15 @@ def hybrid_docker_options(runtime):
     # matmul context creation, while passing the /dev/dri group succeeds
     # without --privileged. Use the same mapping for probe and model.
     # The configured render device is still validated above.
-    environment = ["-e", "RKNPU_HYBRID=W8A8_STANDARD", "-e", "RKNPU_GLUE=1"]
+    # The default ACCEL backend reports zero device memory and llama.cpp
+    # warns that -ngl is ignored. The efficient test opts into GPU classification
+    # so the explicitly requested single layer is a real bounded placement.
+    # Pair with -fit off, and keep KV offloaded disabled: GPU-style KV allocation
+    # is unsupported by this backend.
+    pipeline = "W4A16_HADAMARD" if efficient else "W8A8_STANDARD"
+    environment = ["-e", f"RKNPU_HYBRID={pipeline}", "-e", "RKNPU_GLUE=1"]
+    if efficient:
+        environment += ["-e", "RKNPU_AS_GPU=1"]
     if moe:
         # Only the explicit manual smoke experiment ever enables GGML_OP_MUL_MAT_ID.
         # Leave the original quantization pipeline and IOMMU domains unchanged.
@@ -124,4 +140,4 @@ def hybrid_docker_options(runtime):
              "--security-opt", "systempaths=unconfined",
              "--ulimit", "nofile=262144:262144",
              *environment],
-            ["-ngl", str(layers), "--no-kv-offload"])
+            ["-ngl", str(layers), "--no-kv-offload", *(["--fit", "off"] if efficient else [])])
