@@ -13,17 +13,17 @@ Q3_K_L. The 17 GiB CPU coding model is not silently substituted.
 
 The **same** isolated Docker builder compiles `Dockerfile.rknpu2` once if its
 image is absent. Before loading the ~17 GB Qwen model, it launches a small
-temporary RKNN probe using the **same** `/dev/dri/renderD129` device mapping
+temporary RKNN probe using the **same** `/dev/dri` device-group mapping
 and a narrowly scoped `systempaths=unconfined` setting on the temporary
 NPU model/probe only, allowing the RKNN runtime to inspect SoC system paths.
 No direct `/proc` bind mount is attempted (modern runc rejects those). The probe must create an RKNN matmul context
 **and allocate actual NPU tensor memory**. This replaces the previous
 `--list-devices` check, which incorrectly reported success when the
-runtime could not open the NPU driver. A failed probe aborts quickly with a
-specific error rather than failing after the entire model load.
+runtime could not open the NPU driver. A failed probe aborts quickly, **before the 17 GB GGUF checksum**, with a
+specific error rather than failing after model loading.
 
-Only after the probe passes does it launch the model with
-`--device /dev/dri/renderD129`, requesting **two NPU layers** with
+Only after the probe passes does it validate the pinned Qwen model's checksum
+and launch it with `--device /dev/dri`, requesting **two NPU layers** with
 `-ngl 2 --no-kv-offload`, and pins four A76 cores. It applies a
 262,144 file-descriptor limit to avoid the previously observed RKNN fd
 exhaustion. Docker enforces **18 GiB combined RAM+swap** for the model inside
@@ -80,3 +80,21 @@ availability of `/sys/firmware/devicetree/base/compatible` inside the builder.
 Do not disable safety limits, give the model full `--privileged` access, or
 touch the host driver simply to bypass an initialization error. The rest of the maintainer remains CPU mode
 by default.
+
+## November 21 on-board DRM device isolation
+
+The ROCK 5B+ reports `/dev/dri/renderD129` as the `RKNPU` driver on both
+the host and existing Docker-in-Docker builder. Nevertheless, the nested
+`rknpu-probe` failed to create an RKNN matmul context with only
+`--device /dev/dri/renderD129`, even when seccomp was disabled or
+`CAP_SYS_ADMIN` was added. The **same RKNN probe succeeded** when the
+nested container received `--device /dev/dri`, without `--privileged`.
+Adding `/dev/dma_heap` also succeeded but was not necessary for the probe.
+
+Therefore the NPU-only path now uses `--device /dev/dri` for **both** the
+temporary allocation probe and the model. This gives the NPU workload access
+to the DRM device group, including non-NPU DRM nodes, but is much narrower
+than `--privileged`. CPU profiles remain unchanged. The allocation probe
+now runs **before** hashing/downloading the 17 GB GGUF. Successful small
+allocation proves driver access, **not** full-model success, correct coding
+repair, or a speedup; those require the subsequent paired on-board benchmark.

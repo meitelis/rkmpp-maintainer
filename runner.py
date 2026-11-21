@@ -90,9 +90,6 @@ class Docker:
         self.verify()
         spec, runtime, _ = settings(self.config, profile or ("smoke" if smoke else "coding"))
         memory_preflight = require_model_memory(self.config, spec, runtime)
-        print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
-        path = validated_existing_model(spec, self.workspace) or download_model(
-            spec, self.workspace / "models" / spec["filename"])
         name = "rkmpp-maintainer-model"
         # Only touch this stack's transient model in its own daemon.
         with contextlib.suppress(RuntimeError):
@@ -126,8 +123,9 @@ class Docker:
                          "-t", image, str(source)], timeout=3600)
             if runtime.get("npu_layers", 0) > 0:
                 # --list-devices only proves that the backend was compiled.
-                # Exercise the same device+device-tree mounts through RKNN's
-                # matmul context and allocation APIs before reading 17 GB.
+                # Exercise the exact same board-verified /dev/dri mapping
+                # through RKNN matmul context and allocation APIs before even
+                # checksumming the existing 17 GB GGUF.
                 try:
                     probe = command([
                         "docker", "run", "--rm", "--network", "none",
@@ -138,7 +136,7 @@ class Docker:
                     raise RuntimeError(
                         "NPU preflight failed before model loading. The nested "
                         "container cannot initialize RKNN or allocate NPU memory; "
-                        "check its render device and /proc/device-tree/compatible. "
+                        "check /dev/dri access and the device-tree paths. "
                         + str(error)) from error
                 if "RKNPU_PROBE_OK" not in probe.splitlines():
                     raise RuntimeError(
@@ -146,6 +144,11 @@ class Docker:
                         "confirmation; refusing hybrid model startup")
         else:
             command(["docker", "pull", image], timeout=600)
+        # The NPU probe must pass before expensive hash validation and model
+        # load. Reuse the pinned existing model without duplicating weights.
+        print(f"Validating/downloading {spec["filename"]} ({spec["bytes"]} bytes)", flush=True)
+        path = validated_existing_model(spec, self.workspace) or download_model(
+            spec, self.workspace / "models" / spec["filename"])
         endpoint = "http://builder:8080"
         sampler = None
         try:
