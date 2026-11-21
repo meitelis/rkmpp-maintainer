@@ -96,7 +96,7 @@ class Docker:
         with contextlib.suppress(RuntimeError):
             command(["docker", "rm", "-f", name], timeout=30)
         hybrid = runtime.get("backend") == "rknpu2"
-        cpu_control = selected_profile == "hybrid_cpu"
+        cpu_control = selected_profile in {"hybrid_cpu", "moe_cpu"}
         if runtime.get("backend", "cpu") not in {"cpu", "rknpu2"}:
             raise ValueError("Unknown model backend")
         image = (self.config["rknpu_image"] if hybrid else
@@ -121,6 +121,12 @@ class Docker:
                             ("cache_ram","--cache-ram"), ("context_checkpoints","--ctx-checkpoints")]:
             if field in runtime:
                 model_options += [flag, str(runtime[field])]
+        if selected_profile in {"moe", "moe_cpu"}:
+            # Tested upstream single-board architecture: sparse routed experts
+            # remain mmap'd and CPU-executed, without duplicating/repacking
+            # their weights into large NPU DMA allocations. Leave all eight
+            # active experts intact: accuracy is not traded for a speed claim.
+            model_options += ["--cpu-moe", "--no-repack", "--fit", "off", "--no-warmup"]
         if hybrid or cpu_control:
             # Build two variants of the same pinned source in the existing
             # isolated builder. The control is compiled with RKNN disabled.
@@ -209,6 +215,8 @@ class Docker:
                 ["docker", "inspect", name, "--format", "{{.Image}}"], timeout=30),
                 "model_sha256":spec["sha256"], "filename":spec["filename"],
                 "backend": "rknpu2" if hybrid else "cpu",
+                "moe_strategy": runtime.get("moe_strategy"),
+                "cpu_experts_mmap_requested": runtime.get("moe_strategy") == "resident_cpu_experts",
                 "npu_layers_requested": runtime["npu_layers"] if hybrid else 0,
                 "npu_device_detected": bool(hybrid and runtime["npu_layers"] > 0),
                 "npu_execution_verified": False,
