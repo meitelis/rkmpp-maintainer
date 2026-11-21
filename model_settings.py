@@ -77,13 +77,12 @@ def hybrid_docker_options(runtime):
     device = runtime.get("npu_device")
     if not isinstance(device, str) or re.fullmatch(r"/dev/dri/renderD\d+", device) is None:
         raise ValueError("Hybrid model requires an explicit DRM render device")
-    # Rockchip's RKNN runtime also inspects the SoC's device-tree compatible
-    # file. The DIND builder (privileged parent) exposes the host sysfs file;
-    # mount it into only the short-lived model/probe, read-only.
-    compatible = ("type=bind,source=/sys/firmware/devicetree/base/compatible,"
-                  "target=/proc/device-tree/compatible,readonly")
+    # RKNN checks SoC system paths as well as the DRM render device.
+    # Docker normally masks those paths in nested containers. Unmask only
+    # this temporary NPU model/probe, not the builder or CPU profile.
+    # Do not try to bind-mount inside /proc: modern runc forbids it.
     return (["--device", device + ":" + device,
-             "--mount", compatible,
+             "--security-opt", "systempaths=unconfined",
              "--ulimit", "nofile=262144:262144",
              "-e", "RKNPU_HYBRID=W8A8_STANDARD",
              "-e", "RKNPU_GLUE=1"],
