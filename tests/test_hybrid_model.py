@@ -30,7 +30,7 @@ class HybridModelTests(unittest.TestCase):
         original_layers = settings(config, "hybrid")[1]["npu_layers"]
         self.assertEqual(original_layers, 2)
         self.assertIs(with_smoke_npu_layers(config, "smoke", "hybrid", None), config)
-        for layers in (2, 3, 4):
+        for layers in (1, 2, 3, 4):
             with self.subTest(layers=layers):
                 trial = with_smoke_npu_layers(config, "smoke", "hybrid", layers)
                 self.assertEqual(settings(trial, "hybrid")[1]["npu_layers"], layers)
@@ -49,6 +49,43 @@ class HybridModelTests(unittest.TestCase):
             with self.subTest(action=action, profile=profile, layers=layers):
                 with self.assertRaises(ValueError):
                     with_smoke_npu_layers(config, action, profile, layers)
+
+    def test_moe_experiment_only_in_manual_hybrid_smoke_and_never_default(self):
+        config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+        default = settings(config, "hybrid")[1]
+        self.assertFalse(default.get("npu_moe", False))
+        self.assertNotIn("RKNPU_MOE=1", hybrid_docker_options(default)[0])
+        for action, profile in (("watch", "hybrid"), ("run", "hybrid"),
+                                ("smoke", "coding"), ("smoke", "hybrid_cpu")):
+            with self.subTest(action=action, profile=profile):
+                with self.assertRaises(ValueError):
+                    with_smoke_npu_layers(config, action, profile, 1, moe=True)
+
+        # Smallest experimental footprint: one layer, MoE enabled only there.
+        experimental = with_smoke_npu_layers(config, "smoke", "hybrid", 1, moe=True)
+        runtime = settings(experimental, "hybrid")[1]
+        env, flags = hybrid_docker_options(runtime)
+        self.assertEqual(runtime["npu_layers"], 1)
+        self.assertEqual(runtime["memory"], default["memory"])
+        self.assertEqual(runtime["no_swap"], default["no_swap"])
+        self.assertEqual(runtime["cpu_set"], default["cpu_set"])
+        self.assertEqual(flags, ["-ngl", "1", "--no-kv-offload"])
+        self.assertIn("RKNPU_MOE=1", env)
+        self.assertIn("RKNPU_MOE_DBG=1", env)
+        self.assertIn("RKNPU_GLUE=1", env)
+        self.assertNotIn("--privileged", env)
+        self.assertEqual(config["models"]["hybrid"]["runtime"]["npu_layers"], 2)
+        self.assertNotIn("npu_moe", config["models"]["hybrid"]["runtime"])
+        self.assertNotIn("npu_moe", settings(experimental, "hybrid_cpu")[1])
+
+        for bad in (0, -1, 5, "1", True):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    with_smoke_npu_layers(config, "smoke", "hybrid", bad, moe=True)
+        with self.assertRaises(ValueError):
+            with_smoke_npu_layers(config, "smoke", "hybrid", 1, moe=1)
+        with self.assertRaisesRegex(ValueError, "requires at least one"):
+            hybrid_docker_options({**runtime, "npu_layers": 0})
 
     def test_hybrid_options_are_bounded_and_explicit(self):
         runtime = {"backend": "rknpu2", "npu_layers": 2,
