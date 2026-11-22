@@ -308,7 +308,10 @@ class Docker:
                 options += ["--device", "/dev/mali0:/dev/mali0"]
         for key, value in sorted((env or {}).items()):
             options += ["-e", key + "=" + str(value)]
-        options += ["--entrypoint", shell, image, script, *arguments]
+        # The preflight script is deliberately assertion-heavy and otherwise
+        # silent on failure. Preserve each assertion in the isolated job log.
+        trace = ["-x"] if script == "scripts/test-v11-deploy-preflight.sh" else []
+        options += ["--entrypoint", shell, image, *trace, script, *arguments]
         try:
             return command(options, timeout=timeout, log=log)
         finally:
