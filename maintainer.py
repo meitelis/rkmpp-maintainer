@@ -23,7 +23,7 @@ from limits import job_budget, require_space
 from evidence import record_runtime, save_manifest
 from qualification import runtime_checks
 from model_settings import settings
-from schedule import admission, wait_for_window
+from schedule import admission, seconds_until_next_night, wait_for_window
 from delivery import verify_release_image
 from lessons import verified_lessons, record_verified_repair
 
@@ -495,12 +495,15 @@ def release_attempt_due(entry, now, max_attempts, retry_seconds, *, watch=False)
 
 def poll_releases(args, config, workspace, profile):
     """One bounded discovery cycle. Caller holds the job lock; caller owns sleeping."""
-    delay = max(1, int(config.get("poll_seconds", 21600)))
+    delay = max(1, int(config.get("poll_seconds", 86400)))
     failed = deferred = False
+    if args.action == "watch" and os.environ.get("AUTO_UPDATE") != "true":
+        # Disabled means idle, NOT repeated network checks with no action.
+        print(json.dumps({"status": "idle", "reason": "AUTO_UPDATE disabled; no release checks or builds"}), flush=True)
+        return delay, failed, deferred
     records = discover(workspace)
     print(json.dumps(records), flush=True)
-    if args.action not in {"once", "watch"} or (
-            args.action == "watch" and os.environ.get("AUTO_UPDATE") != "true"):
+    if args.action not in {"once", "watch"}:
         return delay, failed, deferred
     auto_publish = args.publish or (args.action == "watch" and os.environ.get("AUTO_PUBLISH") == "true")
     if auto_publish and not os.environ.get("GITHUB_TOKEN"):
@@ -637,8 +640,10 @@ def main():
                     raise
                 delay = max(1, int(config.get("work_window", {}).get("idle_retry_seconds", 300)))
                 print(json.dumps({"status": "busy", "reason": str(error)}), flush=True)
-            # Never hold the job lock while waiting for the next poll.
-            time.sleep(max(1, delay))
+            # Wake at the next local night-window start, not N hours after
+            # a long build. Shorter failure/idle retries remain in effect.
+            # Never hold the job lock while sleeping.
+            time.sleep(max(1, min(delay, seconds_until_next_night(config))))
     with locked(workspace / "maintainer.lock"):
         recover_jobs(workspace)
         if args.action == "accept-deployment":
