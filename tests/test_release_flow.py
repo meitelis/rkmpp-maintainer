@@ -16,7 +16,7 @@ from runner import Docker
 def qualified(job, image="sha256:qualified"):
     return {
         "status":"built", "kind":"release-candidate", "project":"memories",
-        "target":"11.1.5", "job":str(job), "ready_to_deploy":True,
+        "target":"11.1.5", "job":str(job), "candidate_verified":True,"ready_to_deploy":False,
         "agent_review":{"review_complete":True}, "image_id":image,
         "hardware_qualification":{"ok":True,"image_id":image},
         "pull_request":"https://github.com/meitelis/memories-rkmpp/pull/100",
@@ -35,7 +35,7 @@ class ReleaseFlowTests(unittest.TestCase):
                  patch("maintainer.discover",return_value=record), \
                  patch("maintainer.admission",return_value={"allowed":True}), \
                  patch("maintainer.run_job",return_value={"status":"built","job":"qualified",
-                     "ready_to_deploy":True,"delivery":{"image_id":"sha256:qualified"}}) as job:
+                     "candidate_verified":True,"ready_to_deploy":False,"delivery":{"image_id":"sha256:qualified"}}) as job:
                 maintainer.poll_releases(args,{"poll_seconds":3600},Path(temp),"coding")
             self.assertTrue(job.call_args.kwargs["publish_code"])
 

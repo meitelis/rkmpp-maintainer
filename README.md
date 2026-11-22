@@ -15,7 +15,9 @@ It prepares update candidates; **you deploy running applications manually**.
 3. Run independent source/build checks and board-specific MPP/RGA/playback tests.
    Retry a failed repair up to the configured limit; preserve evidence if it fails.
 4. Export a verified Docker `image.tar`, matching metadata and (for Memories)
-   the Nextcloud helper. Optionally open a GitHub PR for the reviewed candidate.
+   the Nextcloud helper. Mark it `candidate_verified=true` and
+   `validated-awaiting-owner-review`, **not** deployment-approved.
+   Optionally open a **draft** GitHub PR for the candidate.
 5. **Stop.** Never modify the running Immich or Memories stack, and never
    automatically merge a PR. After source review, manual deployment and actual
    client playback checks, the owner may explicitly accept that exact image/PR.
@@ -147,8 +149,9 @@ The owner reviews the PR/diff, imports the matching image, updates only
 the relevant app in Portainer, verifies live playback, and compares
 the running image ID with `result.json:image_id`.
 
-Only then, **if a candidate PR was published**, the owner may explicitly
-authorize its merge from the maintainer Console:
+Only then, **if a candidate PR was published**, the owner must mark the draft
+PR *Ready for review* in GitHub and may explicitly authorize its merge from
+the maintainer Console:
 
 ```sh
 python3 /opt/maintainer/maintainer.py accept-deployment \

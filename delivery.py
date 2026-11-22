@@ -25,10 +25,12 @@ def verify_release_image(job, result):
         raise RuntimeError("Historical/test builds are not release deliveries")
     if result.get("agent_review", {}).get("review_complete") is not True:
         raise RuntimeError("Release candidate has no completed LLM source review")
-    if result.get("ready_to_deploy") is not True:
-        raise RuntimeError("Candidate is not approved for manual deployment")
-    if result.get("artifact_status") != "ready-to-deploy":
-        raise RuntimeError("Candidate has not passed the release delivery gate")
+    if result.get("candidate_verified") is not True:
+        raise RuntimeError("Candidate has not passed independent technical qualification")
+    if result.get("artifact_status") != "validated-awaiting-owner-review":
+        raise RuntimeError("Candidate is not awaiting owner source and playback review")
+    if result.get("deployment_approved") is True or result.get("ready_to_deploy") is True:
+        raise RuntimeError("Technical validation must not claim owner deployment acceptance")
 
     image_id = result.get("image_id")
     image = result.get("image")

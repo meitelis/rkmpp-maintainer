@@ -131,7 +131,8 @@ class JobTests(unittest.TestCase):
                 self.assertFalse(result['deployment_approved'])
                 self.assertTrue((Path(result['job'])/'agent-review.json').exists())
                 self.assertEqual(events, ['model-loaded','model-unloaded','checks','build','hardware'])
-                self.assertTrue(result['ready_to_deploy'])
+                self.assertFalse(result['ready_to_deploy'])
+                self.assertTrue(result['candidate_verified'])
 
     def test_historical_build_without_agent_is_not_approval(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -256,7 +257,8 @@ class JobTests(unittest.TestCase):
                     result = maintainer.run_job('immich', {'repair_rounds':3, 'agent_turns':6},
                         workspace, '3.4.1')
                 self.assertEqual(result['status'], 'built')
-                self.assertTrue(result['ready_to_deploy'])
+                self.assertFalse(result['ready_to_deploy'])
+                self.assertTrue(result['candidate_verified'])
                 self.assertEqual(result['repair_attempts'], 2)
                 self.assertEqual(len(result['repair_failures']), 1)
                 self.assertIn('MPP decode', result['repair_failures'][0]['error'])

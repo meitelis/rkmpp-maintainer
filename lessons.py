@@ -61,7 +61,8 @@ def record_verified_repair(workspace, project, target, result, changed_paths):
         raise ValueError("Unknown maintainer project")
     if (result.get("kind") != "release-candidate" or
             result.get("status") != "built" or
-            result.get("ready_to_deploy") is not True or
+            result.get("candidate_verified") is not True or
+            result.get("deployment_approved") is not True or
             not isinstance(result.get("delivery"), dict) or
             result.get("hardware_qualification",{}).get("ok") is not True or
             not result.get("repair_failures")):

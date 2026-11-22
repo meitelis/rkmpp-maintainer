@@ -110,7 +110,7 @@ def publish(project, root, target, job):
                                           "tree": tree, "parents": [base]})["sha"]
     branch = "automation/" + project + "-" + target + "-" + job.name[-8:]
     github(api + "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit})
-    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": False,
+    pr = github(api + "/pulls", {"head": branch, "base": "main", "draft": True,
         "title": f"Qualified candidate: {project} {target} RKMPP update",
         "body": "Prepared by the local Radxa maintainer after source checks, a complete ARM64 build, "
                 "and isolated RK3588 hardware qualification of the exact exported image ID. "
@@ -165,6 +165,7 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
     result = {"project": project, "target": target, "job": str(job), "status": "preparing",
               "kind": "historical-replay" if base_ref != "main" or source_version else "release-candidate",
               "review_status": "pending-human-review", "deployment_approved": False,
+              "candidate_verified": False, "ready_to_deploy": False,
               "agent_review": {"review_complete": False, "assessment": "skipped" if no_agent else "not-run"}}
     phase(job, result, "preflight")
     try:
@@ -260,8 +261,11 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 raise RuntimeError("Exported image differs from hardware-qualified candidate")
             reviewed = not no_agent and result["agent_review"].get("review_complete") is True
             deliverable = reviewed and result["kind"] == "release-candidate"
-            result["ready_to_deploy"] = bool(deliverable)
-            result["artifact_status"] = ("ready-to-deploy" if deliverable else
+            # Technically qualified means suitable for an OWNER-CONTROLLED trial,
+            # never a claim that real clients have been tested or deployed.
+            result["candidate_verified"] = bool(deliverable)
+            result["ready_to_deploy"] = False
+            result["artifact_status"] = ("validated-awaiting-owner-review" if deliverable else
                 "historical-replay" if result["kind"] != "release-candidate" else "requires-source-review")
             git(root, "add", "-N", "--", ".")
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
@@ -275,15 +279,6 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 result["delivery"] = verify_release_image(job, result)
             result["status"] = "built"
             save_json(job / "result.json", result)
-            if deliverable and result.get("repair_failures"):
-                # Lessons are optional optimisation, not another success gate:
-                # only independently verified releases teach the next update.
-                try:
-                    paths = git(root, "diff", "--name-only", "HEAD").splitlines()
-                    result["verified_repair_recorded"] = record_verified_repair(
-                        workspace, project, target, result, paths)
-                except (OSError, ValueError, RuntimeError) as error:
-                    result["verified_repair_warning"] = str(error)[:400]
             if publish_code:
                 # Publication is strictly downstream of independent hardware and
                 # a complete model review; never publish debug/historical jobs.
@@ -326,7 +321,7 @@ def publish_existing(workspace, job_name):
     if job.parent != (workspace / "jobs").resolve():
         raise RuntimeError("Publication job must be inside the maintainer workspace")
     result = json.loads((job / "result.json").read_text())
-    if result.get("status") != "publication-pending" or not result.get("ready_to_deploy"):
+    if result.get("status") != "publication-pending" or result.get("candidate_verified") is not True:
         raise RuntimeError("Only verified candidates with pending publication can be retried")
     hardware = result.get("hardware_qualification", {})
     if (not isinstance(hardware, dict) or hardware.get("ok") is not True or
@@ -371,7 +366,7 @@ def accept_deployed_candidate(workspace, job_name, observed_image_id, source_rev
         raise RuntimeError("Job must be inside the maintainer workspace")
     result = json.loads((job / "result.json").read_text())
     if (result.get("status") != "built" or result.get("kind") != "release-candidate" or
-            result.get("ready_to_deploy") is not True or
+            result.get("candidate_verified") is not True or
             result.get("image_id") != observed_image_id or
             result.get("agent_review", {}).get("review_complete") is not True):
         raise RuntimeError("Owner's deployed image does not match a complete verified candidate")
@@ -406,10 +401,21 @@ def accept_deployed_candidate(workspace, job_name, observed_image_id, source_rev
                     {"sha":sha, "merge_method":"squash"}, method="PUT")
     if merged.get("merged") is not True or not merged.get("sha"):
         raise RuntimeError("GitHub did not confirm the requested merge")
-    result.update(deployment_approved=True, review_status="owner-accepted-live",
+    result.update(deployment_approved=True, ready_to_deploy=True,
+                  artifact_status="owner-accepted-live",
+                  review_status="owner-accepted-live",
                   owner_confirmed_image_id=observed_image_id,
                   merge_commit=merged["sha"],
                   accepted_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    # Only owner-confirmed successful production playback may teach future
+    # autonomous repairs. Failed or merely hardware-tested candidates do not.
+    if result.get("repair_failures"):
+        try:
+            paths = git(job / "source", "diff", "--name-only", "HEAD").splitlines()
+            result["verified_repair_recorded"] = record_verified_repair(
+                workspace, result["project"], result["target"], result, paths)
+        except (OSError, ValueError, RuntimeError) as error:
+            result["verified_repair_warning"] = str(error)[:400]
     save_json(job / "result.json", result)
     try:
         # Only delete our own branch after GitHub confirms the merge. The
@@ -589,7 +595,7 @@ def poll_releases(args, config, workspace, profile):
                          publish_code=auto_publish, no_agent=args.no_agent, model_profile=profile)
         # A built debug job without a verified archive is not a release.
         if result["status"] == "built" and (
-                result.get("ready_to_deploy") is not True or
+                result.get("candidate_verified") is not True or
                 not isinstance(result.get("delivery"), dict)):
             result.update(status="failed", ready_to_deploy=False,
                           artifact_status="blocked",

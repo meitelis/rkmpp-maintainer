@@ -114,7 +114,7 @@ class WatcherTests(unittest.TestCase):
                       {"project":"immich","latest":"3.4.1","update":False}]
             good_job=workspace/"jobs"/"memories-11.1.5-aabbccdd"
             good_job.mkdir(parents=True)
-            response={"status":"built","job":str(good_job),"ready_to_deploy":True,
+            response={"status":"built","job":str(good_job),"candidate_verified":True,
                       "delivery":{"image_id":"sha256:qualified"}}
             with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"false"},clear=True), \
                  patch("maintainer.discover",return_value=releases), \
@@ -152,7 +152,7 @@ class WatcherTests(unittest.TestCase):
             records = [{"project": "immich", "latest": "3.4.1", "update": True}]
             args = SimpleNamespace(action="once", ignore_window=False, publish=False, no_agent=True)
             result = iter([{"status": "failed", "job": "job1"},
-                           {"status": "built", "job": "job2", "ready_to_deploy":True,
+                           {"status": "built", "job": "job2", "candidate_verified":True,
                             "delivery":{"image_id":"sha256:qualified"}}])
             with patch("maintainer.discover", return_value=records), \
                  patch("maintainer.admission", return_value={"allowed": True}), \

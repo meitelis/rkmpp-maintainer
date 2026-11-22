@@ -45,7 +45,8 @@ class DeliveryGateTests(unittest.TestCase):
                 archive.addfile(entry,io.BytesIO(blob))
         result={"kind":"release-candidate","project":project,
                 "agent_review":{"review_complete":True},
-                "ready_to_deploy":True,"artifact_status":"ready-to-deploy",
+                "candidate_verified":True,"ready_to_deploy":False,
+                "artifact_status":"validated-awaiting-owner-review",
                 "image_id":expected_id,"image":image,
                 "hardware_qualification":{"ok":True,"image_id":expected_id,"arch":"arm64"}}
         return result

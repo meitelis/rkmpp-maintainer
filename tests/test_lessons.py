@@ -7,7 +7,7 @@ from lessons import record_verified_repair, verified_lessons
 
 
 def qualified():
-    return {"kind":"release-candidate","status":"built","ready_to_deploy":True,
+    return {"kind":"release-candidate","status":"built","candidate_verified":True,"deployment_approved":True,
         "delivery":{"sha256":"verified"},"image_id":"sha256:"+"a"*64,
         "hardware_qualification":{"ok":True},
         "repair_failures":[{"attempt":1,"error":"MPP invalid surface during HEVC seek"}]}
@@ -18,7 +18,7 @@ class LessonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             result=qualified()
             for change in (
-                {"status":"failed"},{"ready_to_deploy":False},
+                {"status":"failed"},{"deployment_approved":False},
                 {"hardware_qualification":{"ok":False}},{"delivery":None},
                 {"kind":"historical-replay"}):
                 attempt={**result,**change}

@@ -33,7 +33,8 @@ retest cycle (default `repair_rounds=3`). The model may change allowed
 integration source, not the protected verification. Every retry gets separate
 test and model logs and a fresh hardware scratch directory.
 
-The release artifact is advertised as `ready_to_deploy=true` **only** after
+The release artifact is marked `candidate_verified=true` and
+`validated-awaiting-owner-review` **only** after
 the complete gate passes and the exported image ID equals the qualified image
 ID. `--no-agent` historical/debug runs remain `requires-source-review`.
 Failed or incomplete builds stay `blocked`, with their evidence retained.
@@ -46,7 +47,7 @@ Output: `/armbian/rkmpp-maintainer/data/jobs/<job>/`
 
 - `image.tar`: candidate runtime image suitable for `docker load`.
 - `result.json`: project, release, image tag/ID, repair attempts, hardware
-  qualification, `ready_to_deploy` and any repair failures.
+  qualification, `candidate_verified`, owner acceptance and any repair failures.
 - `build-*.log`, `checks-*.log`, `hardware-*.log`: per-attempt evidence.
 - `hardware-*/`: synthetic hardware report or Memories device test logs.
 - `candidate.diff`, `agent-review-*.json`, `run-manifest.json`:
@@ -75,3 +76,5 @@ phone/browser; real client behavior remains a final deployment acceptance step.
 Do not enable unattended image preparation until the new controller itself
 passes CI and a real board qualification cycle. The controller's
 `AUTO_UPDATE=false` default is retained.
+
+Owner-reviewed deployment is a separate state: `deployment_approved=false` and `ready_to_deploy=false` until the exact candidate passes human source review, live-client playback, and the owner-authorized merge. Candidate PRs start as drafts; an owner must mark the PR ready for review after those checks before invoking accept-deployment. Lessons are promoted only after this acceptance, never merely from CI or a hardware suite.
