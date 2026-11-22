@@ -29,6 +29,27 @@ def window(config, now=None):
             "retry_seconds":rule.get("idle_retry_seconds",300) if allowed else seconds}
 
 
+def seconds_until_next_night(config, now=None):
+    """Seconds until the next local night-window start, including DST changes.
+
+    Used only as a wake-up deadline for the release watcher. The ordinary
+    window/idle gate still makes the final decision on starting heavy work.
+    """
+    rule = config.get("work_window", {})
+    zone = ZoneInfo(rule.get("timezone", "Europe/Dublin"))
+    local = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(zone)
+    start = rule.get("start_hour", 0)
+    if type(start) is not int or not 0 <= start <= 23:
+        raise ValueError("Invalid nightly start hour")
+    next_start = datetime.datetime.combine(local.date(), datetime.time(start), tzinfo=zone)
+    if next_start <= local:
+        next_start = datetime.datetime.combine(
+            local.date() + datetime.timedelta(days=1), datetime.time(start), tzinfo=zone)
+    seconds = (next_start.astimezone(datetime.timezone.utc) -
+               local.astimezone(datetime.timezone.utc)).total_seconds()
+    return max(1, int(seconds) + 1)
+
+
 def cpu_sample():
     fields = [int(v) for v in Path("/proc/stat").read_text().splitlines()[0].split()[1:9]]
     return sum(fields), fields[3]  # Count I/O wait as busy for admission purposes.
