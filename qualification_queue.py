@@ -221,26 +221,62 @@ def qualification_once(config, workspace, profile="coding", ignore_window=False)
         return run_suite(config, workspace, profile, ignore_window)
 
 
+def write_supervisor_status(workspace, status, **extra):
+    """Portainer-visible status, separate from each stage's detailed evidence."""
+    data = {"status": status,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            **extra}
+    save_json(Path(workspace) / "qualifier-status.json", data)
+    return data
+
+
+def supervisor_health(workspace):
+    """Healthy means active, waiting, completed, or intentionally disabled.
+
+    A failed worker remains alive for diagnostics but must be UNHEALTHY in
+    Docker rather than showing as a misleading healthy idle container.
+    """
+    try:
+        state = json.loads((Path(workspace) / "qualifier-status.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return {"healthy": False, "status": "missing-or-corrupt-supervisor-status"}
+    status = state.get("status") if isinstance(state, dict) else None
+    if status not in {"disabled", "busy", "running", "completed", "blocked"}:
+        return {"healthy": False, "status": "invalid-supervisor-status"}
+    return {"healthy": status != "blocked", "status": status,
+            "reason": state.get("reason")}
+
+
 def supervise(config, workspace, profile="coding", enabled=False):
-    """Docker PID 1: restart after crash, remain idle after terminal outcome."""
+    """Docker PID 1: restart after crash, report terminal failure as unhealthy."""
     if not enabled:
+        write_supervisor_status(workspace, "disabled",
+                                reason="QUALIFICATION_ENABLED=false")
         print(json.dumps({"status":"idle","reason":"QUALIFICATION_ENABLED=false"}), flush=True)
     else:
         while True:
             try:
+                write_supervisor_status(workspace, "running",
+                                        reason="qualification worker active")
                 result = qualification_once(config, workspace, profile)
+                successful = result["status"] == "qualified-for-candidate-preparation"
+                write_supervisor_status(
+                    workspace, "completed" if successful else "blocked",
+                    reason=result["status"], report=result.get("report"))
                 print(json.dumps({"status":result["status"],"report":result.get("report")}), flush=True)
                 break
             except Exception as error:
                 if isinstance(error, RuntimeError) and str(error) == "Another maintainer job is running":
+                    write_supervisor_status(workspace, "busy",
+                                            reason="Another worker owns qualification lock")
                     print(json.dumps({"status":"busy","retry_seconds":60,
                                       "reason":"Existing worker holds qualification or maintenance lock"}), flush=True)
                     time.sleep(60)
                     continue
+                write_supervisor_status(workspace, "blocked", reason=str(error)[:1000])
                 print(json.dumps({"status":"blocked","reason":str(error)[:1000]}), flush=True)
                 break
-    # An on-failure restart policy would loop on bad inputs. Keep status visible
-    # instead; the operator can explicitly opt in on a new controller revision.
+    # Preserve terminal failure evidence without Docker restart looping.
     while True:
         time.sleep(3600)
 
@@ -251,10 +287,15 @@ if __name__ == "__main__":
     parser.add_argument("--model-profile", choices=["coding","smoke"], default="coding")
     parser.add_argument("--ignore-window", action="store_true")
     parser.add_argument("--serve", action="store_true", help="Run as Portainer foreground service")
+    parser.add_argument("--health", action="store_true", help="Portainer health probe")
     args = parser.parse_args()
     config = json.loads((Path(__file__).parent / "config.json").read_text())
     workspace = Path(os.environ.get("WORKSPACE", "/workspace"))
     workspace.mkdir(parents=True, exist_ok=True)
+    if args.health:
+        observed = supervisor_health(workspace)
+        print(json.dumps(observed), flush=True)
+        raise SystemExit(0 if observed["healthy"] else 1)
     if args.serve:
         if args.ignore_window:
             parser.error("Supervised qualification cannot bypass the night/idle window")

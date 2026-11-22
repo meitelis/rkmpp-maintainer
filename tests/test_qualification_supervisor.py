@@ -6,19 +6,21 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from qualification_queue import run_suite, supervise
+from qualification_queue import run_suite, supervise, supervisor_health
 
 
 class QualificationSupervisorTests(unittest.TestCase):
     def test_disabled_is_noop(self):
-        with patch("qualification_queue.qualification_once") as worker, \
+        with patch("qualification_queue.write_supervisor_status") as report, \
+             patch("qualification_queue.qualification_once") as worker, \
              patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 supervise({}, Path("/unused"), enabled=False)
         worker.assert_not_called()
 
     def test_conflicting_manual_worker_is_not_killed_or_overlapped(self):
-        with patch("qualification_queue.qualification_once", side_effect=[
+        with patch("qualification_queue.write_supervisor_status") as report, \
+             patch("qualification_queue.qualification_once", side_effect=[
                 RuntimeError("Another maintainer job is running"),
                 {"status":"qualified-for-candidate-preparation", "report":"/workspace/report.json"}]) as work, \
              patch("qualification_queue.time.sleep", side_effect=[None, KeyboardInterrupt]) as sleeper:
@@ -28,7 +30,8 @@ class QualificationSupervisorTests(unittest.TestCase):
         self.assertEqual([c.args for c in sleeper.call_args_list], [(60,), (3600,)])
 
     def test_failed_stage_is_terminal_not_a_restart_loop(self):
-        with patch("qualification_queue.qualification_once",
+        with patch("qualification_queue.write_supervisor_status") as report, \
+             patch("qualification_queue.qualification_once",
                    return_value={"status":"failed", "report":"/workspace/failed.json"}) as work, \
              patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -36,7 +39,8 @@ class QualificationSupervisorTests(unittest.TestCase):
         work.assert_called_once()
 
     def test_corrupt_checkpoint_does_not_trigger_docker_restart_loop(self):
-        with patch("qualification_queue.qualification_once",
+        with patch("qualification_queue.write_supervisor_status") as report, \
+             patch("qualification_queue.qualification_once",
                    side_effect=ValueError("Invalid result.json")) as work, \
              patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -44,7 +48,8 @@ class QualificationSupervisorTests(unittest.TestCase):
         work.assert_called_once()
 
     def test_unexpected_preflight_error_does_not_start_endless_retries(self):
-        with patch("qualification_queue.qualification_once",
+        with patch("qualification_queue.write_supervisor_status") as report, \
+             patch("qualification_queue.qualification_once",
                    side_effect=RuntimeError("isolated Docker unavailable")) as work, \
              patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -114,6 +119,34 @@ class QualificationSupervisorTests(unittest.TestCase):
             self.assertEqual(result["status"],"qualified-for-candidate-preparation")
             work.assert_not_called()
 
+
+
+    def test_supervisor_failure_is_unhealthy_while_process_remains_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("qualification_queue.qualification_once",
+                       return_value={"status":"failed","report":"/workspace/failure.json"}), \
+                 patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    supervise({}, Path(tmp), enabled=True)
+            self.assertEqual(supervisor_health(tmp)["status"],"blocked")
+            self.assertFalse(supervisor_health(tmp)["healthy"])
+
+    def test_completed_qualification_has_healthy_immutable_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("qualification_queue.qualification_once",
+                       return_value={"status":"qualified-for-candidate-preparation",
+                                     "report":"/workspace/result.json"}), \
+                 patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    supervise({}, Path(tmp), enabled=True)
+            self.assertEqual(supervisor_health(tmp)["status"],"completed")
+            self.assertTrue(supervisor_health(tmp)["healthy"])
+
+    def test_corrupt_or_absent_supervisor_status_is_unhealthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(supervisor_health(tmp)["healthy"])
+            (Path(tmp)/"qualifier-status.json").write_text("not json")
+            self.assertFalse(supervisor_health(tmp)["healthy"])
 
 if __name__ == "__main__":
     unittest.main()

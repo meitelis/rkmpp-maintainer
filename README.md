@@ -128,6 +128,12 @@ a second interruption or a real test failure stops that revision and retains
 evidence. Completed revisions are not rerun. The container remains alive
 but idle after a terminal result, avoiding a restart loop.
 
+Portainer's Docker health check reports `unhealthy` if the worker fails, or
+if supervisor status is missing/corrupt. A disabled, waiting, or successfully
+completed worker is `healthy`; this indicates process status, **not** proof of
+model progress or finished qualification. Docker Compose does not by itself
+restart a running but unhealthy container.
+
 Inspect `docker logs rkmpp-maintainer-qualifier-1 --tail 50`, and the
 saved JSON under `/armbian/rkmpp-maintainer/data/qualifications/`.
 No deployment, application restart, or automatic PR merge is performed.
