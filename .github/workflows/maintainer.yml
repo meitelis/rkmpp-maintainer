@@ -49,6 +49,10 @@ jobs:
         run: docker compose build maintainer
       - name: Actual PHP failure propagation, broken-source rejection and Docker timeout cleanup
         run: docker compose run --rm maintainer runtime-check --ignore-window
+      # Fail quickly on real isolated fork-script regressions BEFORE downloading
+      # multi-GB model weights and spending minutes on inference.
+      - name: Real isolated Memories deployment-preflight with executable fake Docker
+        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/executor_check.py
       - name: Real ARM64 local-model edit, tests, build and export
         run: docker compose run --rm maintainer smoke --ignore-window
       - name: Real Go startup integration repair and complete Memories candidate checks
