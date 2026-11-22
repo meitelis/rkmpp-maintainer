@@ -22,7 +22,14 @@ It prepares update candidates; **you deploy running applications manually**.
    automatically merge a PR. After source review, manual deployment and actual
    client playback checks, the owner may explicitly accept that exact image/PR.
 
-The Git-visible candidate source (tracked and unignored untracked files) is\nfingerprinted after independent checks and rechecked after build, hardware\ntests, export, and before PR publication. Generated ignored caches are not\npart of this fingerprint; the independently tested Docker image ID and\nexport archive checksum remain required. Any detected source mutation fails\nthe candidate instead of silently publishing changed source.\n\nA passing LLM report, Docker build or CI job is **not** sufficient to approve
+The Git-visible candidate source (tracked and unignored untracked files) is
+fingerprinted before independent checks and rechecked after checks, build, hardware
+tests, export, and before PR publication. Generated ignored caches are not
+part of this fingerprint; the independently tested Docker image ID and
+export archive checksum remain required. Any detected source mutation fails
+the candidate instead of silently publishing changed source.
+
+A passing LLM report, Docker build or CI job is **not** sufficient to approve
 a candidate. See [qualification](QUALIFICATION.md) and
 [delivery gates](READY_IMAGES.md).
 
@@ -139,7 +146,9 @@ restart a running but unhealthy container.
 Inspect `docker logs rkmpp-maintainer-qualifier-1 --tail 50`, and the
 saved JSON under `/armbian/rkmpp-maintainer/data/qualifications/`.
 No deployment, application restart, or automatic PR merge is performed.
-Historical replay qualification alone cannot certify a future real release.
+The historical transition replays target the **currently shipped integrations**:
+Memories 11.1.2 → 11.1.4 and Immich 3.4.1 → 3.4.2, using pinned earlier
+fork commits. They cannot certify a future real upstream release.
 
 ## Candidate delivery and acceptance
 

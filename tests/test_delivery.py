@@ -60,6 +60,13 @@ class DeliveryGateTests(unittest.TestCase):
             self.assertEqual(delivery["sha256"],hashlib.sha256(
                 (Path(directory)/"image.tar").read_bytes()).hexdigest())
 
+    def test_candidate_cannot_claim_owner_approval_before_live_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result=self.prepare(directory)
+            result["ready_to_deploy"]=True
+            with self.assertRaisesRegex(RuntimeError,"owner deployment acceptance"):
+                verify_release_image(directory,result)
+
     def test_blob_layout_validates_config_content(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.prepare(directory, blob=True)

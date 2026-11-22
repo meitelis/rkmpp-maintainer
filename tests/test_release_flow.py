@@ -27,6 +27,36 @@ def qualified(job, image="sha256:qualified"):
 
 
 class ReleaseFlowTests(unittest.TestCase):
+    def test_automated_publication_creates_a_draft_pr_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job=Path(tmp)/"jobs"/"immich-3.4.3-aabbccdd"
+            root=job/"source"
+            root.mkdir(parents=True)
+            (root/"safe.py").write_text("print('checked')\n")
+            sent=[]
+            def git(src,*args):
+                if args==("rev-parse","HEAD"): return "a"*40
+                if args==("diff","--name-only","HEAD"): return "safe.py"
+                if args==("ls-files","--others","--exclude-standard"): return ""
+                raise AssertionError(args)
+            def github(path,data=None,method=None):
+                if path.endswith("/git/ref/heads/main"): return {"object":{"sha":"a"*40}}
+                if path.endswith("/git/commits/"+"a"*40): return {"tree":{"sha":"b"*40}}
+                if path.endswith("/git/trees"): return {"sha":"c"*40}
+                if path.endswith("/git/commits"): return {"sha":"d"*40}
+                if path.endswith("/git/refs"): return {}
+                if path.endswith("/pulls"):
+                    sent.append(data)
+                    return {"html_url":"https://github.com/test/pr/1","number":1}
+                raise AssertionError(path)
+            with patch.dict(os.environ,{"GITHUB_TOKEN":"scoped"}), \
+                 patch("maintainer.git",side_effect=git), \
+                 patch("maintainer.github",side_effect=github):
+                result=maintainer.publish("immich",root,"3.4.3",job)
+            self.assertEqual(len(sent),1)
+            self.assertIs(sent[0]["draft"],True)
+            self.assertEqual(result["publication_status"],"published")
+
     def test_watch_can_publish_only_after_opt_in_and_token(self):
         with tempfile.TemporaryDirectory() as temp:
             args=SimpleNamespace(action="watch",publish=False,no_agent=False,ignore_window=False)
