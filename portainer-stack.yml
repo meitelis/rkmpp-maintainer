@@ -94,7 +94,9 @@ services:
     environment:
       DOCKER_HOST: tcp://builder:2375
       DOCKER_TLS_CERTDIR: ""
-      QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-false}
+      # Explicit owner opt-in for this Git-managed Portainer deployment.
+      # The stage worker still observes the 00:00–08:00 idle admission gate.
+      QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-true}
     entrypoint: ["python3", "/opt/maintainer/qualification_queue.py"]
     command: ["--serve", "--model-profile", "coding"]
     healthcheck:

@@ -69,7 +69,7 @@ Only the **Portainer** stack manages the running services. Do not run host
 | `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=false` | **Idle:** no upstream release requests, candidate builds or publishing |
 | `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=true` | Check on startup and at Dublin-local midnight; prepare candidates only in **00:00–08:00** when host CPU/RAM is idle |
 | `AUTO_PUBLISH=false` | Keep verified candidates locally; **no GitHub PR** |
-| `QUALIFICATION_ENABLED=false` | Supervised qualifier stays idle until explicitly enabled |
+| `QUALIFICATION_ENABLED=true` (Git-stack default) | Runs the supervised qualification once when the night/idle gate permits; override to `false` in Portainer environment to disable |
 | `AUTO_PUBLISH=true` | Request a candidate PR only after checks/hardware qualification; requires a narrowly scoped `GITHUB_TOKEN`. **Do not enable before execution isolation is qualified.** |
 
 New heavy jobs must satisfy the night window, CPU/load thresholds and RAM
@@ -122,7 +122,9 @@ repair exercise.
 
 The Portainer stack now includes a separate `qualifier` service running the
 same local image **without a GitHub token**. Set `QUALIFICATION_ENABLED=true`
-in the Portainer stack environment to start it; the default false stays idle.
+in the Portainer stack environment to start it; the Git-managed stack on this
+branch now defaults to true at the owner's request. Set an explicit false in
+Portainer's stack environment to disable it.
 Use the PR #10 stack definition, not the older main version. There is no need
 to launch another `docker exec -d` background worker.
 

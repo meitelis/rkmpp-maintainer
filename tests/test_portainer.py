@@ -14,7 +14,7 @@ class PortainerTests(unittest.TestCase):
         stack = (root / "portainer-stack.yml").read_text()
         self.assertIn('AUTO_UPDATE: ${AUTO_UPDATE:-false}', stack)
         self.assertIn('AUTO_PUBLISH: ${AUTO_PUBLISH:-false}', stack)
-        self.assertIn('QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-false}', stack)
+        self.assertIn('QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-true}', stack)
         self.assertIn('entrypoint: ["python3", "/opt/maintainer/qualification_queue.py"]', stack)
         qualifier = stack.split('  qualifier:', 1)[1].split('\nnetworks:', 1)[0]
         self.assertIn('restart: unless-stopped', qualifier)
