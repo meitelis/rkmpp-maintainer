@@ -14,6 +14,46 @@ import maintainer
 
 
 class WatcherTests(unittest.TestCase):
+    def test_disabled_watch_is_idle_and_never_fetches_releases(self):
+        args = SimpleNamespace(action="watch", ignore_window=False, publish=False, no_agent=False)
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {"AUTO_UPDATE": "false"}, clear=True), \
+                 patch("maintainer.discover") as discover, \
+                 patch("maintainer.run_job") as jobs:
+                delay, failed, deferred = maintainer.poll_releases(
+                    args, {"poll_seconds": 86400}, Path(temp), "coding")
+            self.assertEqual((delay, failed, deferred), (86400, False, False))
+            discover.assert_not_called()
+            jobs.assert_not_called()
+
+    def test_watcher_wakes_at_midnight_not_24_hours_after_previous_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            config = workspace / "config.json"
+            config.write_text('{"poll_seconds": 86400}')
+            owning = []
+            @contextlib.contextmanager
+            def tracked_lock(path):
+                owning.append(True)
+                try:
+                    yield
+                finally:
+                    owning.pop()
+            def sleep(seconds):
+                self.assertEqual(owning, [], "watcher retained the lock during sleep")
+                self.assertEqual(seconds, 1800)
+                raise KeyboardInterrupt
+            with patch.object(sys, "argv", ["maintainer", "watch", "--config", str(config),
+                                            "--workspace", str(workspace)]), \
+                 patch("maintainer.locked", side_effect=tracked_lock), \
+                 patch("maintainer.poll_releases", return_value=(86400, False, False)) as poll, \
+                 patch("maintainer.seconds_until_next_night", return_value=1800), \
+                 patch("maintainer.time.sleep", side_effect=sleep), \
+                 patch.dict(os.environ, {"AUTO_UPDATE": "true"}):
+                with self.assertRaises(KeyboardInterrupt):
+                    maintainer.main()
+                poll.assert_called_once()
+
     def test_current_releases_produce_no_images_or_jobs(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace=Path(temp)
