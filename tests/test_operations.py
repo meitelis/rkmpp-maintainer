@@ -60,7 +60,9 @@ class OperationsTests(unittest.TestCase):
                                      env={"MEMORIES_RKMPP_IMAGE": "local/memories-rkmpp:test"})
             run = next(args for args in calls if args[:3] == ["docker", "run", "--rm"])
             self.assertIn("--network", run)
-            self.assertEqual(run[run.index("--network") + 1], "none")
+            # The inner Docker client must reach registry auth endpoints;
+            # the nested daemon socket already confers network capability.
+            self.assertEqual(run[run.index("--network") + 1], "bridge")
             self.assertIn("--read-only", run)
             self.assertIn("--cap-drop", run)
             self.assertIn("ALL", run)
@@ -71,6 +73,23 @@ class OperationsTests(unittest.TestCase):
             self.assertNotIn("do-not-expose", " ".join(run))
             self.assertIn("scripts/build-v11.sh", run)
             self.assertFalse(any(a[0] == "sh" for a in calls))
+
+    def test_mock_only_preflight_remains_offline_and_has_exec_tmpfs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            docker = Docker({}, temp)
+            commands = []
+            def invoke(args, **kwargs):
+                commands.append(args)
+                return ""
+            with patch.object(docker, "verify"), patch("runner.command", side_effect=invoke):
+                docker.source_script("memories", temp,
+                                     "scripts/test-v11-deploy-preflight.sh",
+                                     Path(temp) / "preflight.log")
+            run = next(args for args in commands if args[:3] == ["docker", "run", "--rm"])
+            self.assertEqual(run[run.index("--network") + 1], "none")
+            self.assertNotIn("type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock", run)
+            self.assertIn("/run/preflight-mocks:rw,exec,nosuid,nodev,size=16m,mode=1777", run)
+            self.assertIn("TMPDIR=/run/preflight-mocks", run)
 
     def test_executor_refuses_arbitrary_scripts_and_token_env(self):
         with tempfile.TemporaryDirectory() as temp:
