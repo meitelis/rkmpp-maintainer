@@ -60,6 +60,10 @@ def record_runtime(job, docker):
             value.get("model_sha256") == (result.get("model") or {}).get("sha256"))
         save_json(path, result)
 
+class CandidateSourceMutation(RuntimeError):
+    """Source no longer matches the reviewed baseline; never attempt an LLM retry."""
+
+
 def candidate_source_digest(root):
     """Hash precisely the Git-visible candidate source bytes and modes.
 

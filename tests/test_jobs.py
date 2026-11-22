@@ -154,6 +154,41 @@ class JobTests(unittest.TestCase):
                 self.assertFalse(result['ready_to_deploy'])
 
 
+    def test_mutation_by_preflight_is_terminal_not_fed_back_to_model(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), \
+                 patch('maintainer.candidate_source_digest',
+                       side_effect=['a'*64,'b'*64]), \
+                 patch('maintainer.validate'), patch('maintainer.Docker') as cls:
+                result=maintainer.run_job('immich', {'repair_rounds':3}, Path(temp),
+                                         '3.4.1', no_agent=True)
+            self.assertEqual(result['status'],'failed')
+            self.assertIn('source changed during independent checks',result['error'])
+            cls.return_value.build.assert_not_called()
+            cls.return_value.hardware.assert_not_called()
+            cls.return_value.export.assert_not_called()
+
+    def test_source_mutation_after_build_aborts_without_hardware_or_export(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def prepare(project, job, *args):
+                root, upstream = job/'source', job/'upstream'
+                root.mkdir(); upstream.mkdir()
+                return root, upstream, [], []
+            with patch('maintainer.prepare', side_effect=prepare), \
+                 patch('maintainer.candidate_source_digest',
+                       side_effect=['a'*64,'a'*64,'b'*64]), \
+                 patch('maintainer.validate'), patch('maintainer.Docker') as cls:
+                result=maintainer.run_job('immich', {'repair_rounds':3}, Path(temp),
+                                         '3.4.1', no_agent=True)
+            self.assertEqual(result['status'],'failed')
+            self.assertIn('source changed during build', result['error'])
+            cls.return_value.hardware.assert_not_called()
+            cls.return_value.export.assert_not_called()
+
     def test_hardware_failure_blocks_export_and_ready_status(self):
         with tempfile.TemporaryDirectory() as temp:
             def prepare(project, job, *args):

@@ -20,7 +20,7 @@ from profiles import PROJECTS, current_version, git, reconcile, validate
 from repair_fixture import BROKEN, REFERENCE, create_fixture
 from runner import Docker
 from limits import job_budget, require_space
-from evidence import candidate_source_digest, record_runtime, save_manifest
+from evidence import CandidateSourceMutation, candidate_source_digest, record_runtime, save_manifest
 from qualification import runtime_checks
 from model_settings import settings
 from schedule import admission, seconds_until_next_night, wait_for_window
@@ -209,25 +209,32 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                         (job / f"agent-summary-{attempt}.txt").write_text(review["summary"] + "\n")
                 try:
                     phase(job, result, f"checks-{attempt + 1}")
-                    validate(root)
-                    docker.checks(project, root, job / f"checks-{attempt}.log")
-                    # Snapshot the exact candidate before invoking source-controlled
-                    # build/hardware scripts with access to the isolated daemon.
+                    # Freeze the reviewed candidate BEFORE any checks, including
+                    # fork-controlled preflight scripts, may touch the checkout.
                     source_id = candidate_source_digest(root)
                     result["candidate_source_sha256"] = source_id
+                    validate(root)
+                    docker.checks(project, root, job / f"checks-{attempt}.log")
+                    if candidate_source_digest(root) != source_id:
+                        raise CandidateSourceMutation(
+                            "Candidate source changed during independent checks")
                     phase(job, result, f"build-{attempt + 1}")
                     docker.build(project, root, tag, job / f"build-{attempt}.log")
                     if candidate_source_digest(root) != source_id:
-                        raise RuntimeError("Candidate source changed during build; review and rebuild")
+                        raise CandidateSourceMutation("Candidate source changed during build")
                     phase(job, result, f"hardware-{attempt + 1}")
                     hardware = docker.hardware(project, root, tag, job / f"hardware-{attempt}.log")
                     if candidate_source_digest(root) != source_id:
-                        raise RuntimeError("Candidate source changed during hardware checks; review and rebuild")
+                        raise CandidateSourceMutation("Candidate source changed during hardware checks")
                     if not isinstance(hardware, dict) or hardware.get("ok") is not True or not hardware.get("image_id"):
                         raise RuntimeError("Independent RK3588 hardware qualification was not completed")
                     result["hardware_qualification"] = hardware
                     result["repair_attempts"] = attempt + 1
                     break
+                except CandidateSourceMutation:
+                    # Never train/retry on a checkout that a source-provided
+                    # executable changed outside the reviewed model edits.
+                    raise
                 except RuntimeError as error:
                     errors = str(error)
                     result.setdefault("repair_failures", []).append({
@@ -245,10 +252,10 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 raise RuntimeError("Missing successful RK3588 hardware qualification")
             phase(job, result, "export")
             if candidate_source_digest(root) != result["candidate_source_sha256"]:
-                raise RuntimeError("Candidate source changed after hardware qualification")
+                raise CandidateSourceMutation("Candidate source changed after hardware qualification")
             result.update(image=tag, image_id=docker.export(tag, job / "image.tar"))
             if candidate_source_digest(root) != result["candidate_source_sha256"]:
-                raise RuntimeError("Candidate source changed during export")
+                raise CandidateSourceMutation("Candidate source changed during export")
             if result["image_id"] != hardware["image_id"]:
                 raise RuntimeError("Exported image differs from hardware-qualified candidate")
             reviewed = not no_agent and result["agent_review"].get("review_complete") is True
