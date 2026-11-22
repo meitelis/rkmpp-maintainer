@@ -231,8 +231,8 @@ def supervise(config, workspace, profile="coding", enabled=False):
                 result = qualification_once(config, workspace, profile)
                 print(json.dumps({"status":result["status"],"report":result.get("report")}), flush=True)
                 break
-            except RuntimeError as error:
-                if str(error) == "Another maintainer job is running":
+            except Exception as error:
+                if isinstance(error, RuntimeError) and str(error) == "Another maintainer job is running":
                     print(json.dumps({"status":"busy","retry_seconds":60,
                                       "reason":"Existing worker holds qualification or maintenance lock"}), flush=True)
                     time.sleep(60)

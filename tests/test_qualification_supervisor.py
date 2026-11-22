@@ -35,6 +35,14 @@ class QualificationSupervisorTests(unittest.TestCase):
                 supervise({}, Path("/unused"), enabled=True)
         work.assert_called_once()
 
+    def test_corrupt_checkpoint_does_not_trigger_docker_restart_loop(self):
+        with patch("qualification_queue.qualification_once",
+                   side_effect=ValueError("Invalid result.json")) as work, \
+             patch("qualification_queue.time.sleep", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                supervise({}, Path("/unused"), enabled=True)
+        work.assert_called_once()
+
     def test_unexpected_preflight_error_does_not_start_endless_retries(self):
         with patch("qualification_queue.qualification_once",
                    side_effect=RuntimeError("isolated Docker unavailable")) as work, \
