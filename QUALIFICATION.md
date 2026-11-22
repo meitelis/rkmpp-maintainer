@@ -7,8 +7,8 @@ Required checks for this revision:
 1. Full Linux unit suite, Python syntax, both Compose files and migration syntax pass.
 2. `runtime-check` passes using the actual pinned PHP/Python images and isolated Docker daemon. Invalid PHP must fail before compatibility execution; valid PHP must pass; the broken behavioral fixture must fail; a timed-out check container must be removed.
 3. The selected coding model repairs the protected HTTP-option exercise, completes every required observation, passes all five behavioral checks, and builds/exports the result. The smaller Ornith control runs in ARM64 CI; the larger Qwen coding profile must pass independently on the Radxa.
-4. A Memories historical upgrade replay passes reconciliation, full required review coverage, protected source checks and candidate build/export. A deliberately old replay remains evidence only and must not replace the current service.
-5. A current-fork Immich 3.4.0 → 3.4.1 candidate passes the same gates plus playback-fragment checks against the built image.
+4. A Memories 11.1.2 → 11.1.4 historical upgrade replay passes reconciliation, full required review coverage, protected source checks and candidate build/export. A deliberately old replay remains evidence only and must not replace the current service.
+5. A current-release Immich 3.4.1 → 3.4.2 candidate passes the same gates plus playback-fragment checks against the built image.
 6. A genuine model repair in real integration source is checked independently; the Python smoke alone does not satisfy this criterion.
 7. Portainer image identity, controller source digest, runtime/model digests, settings, source commits, final patches and job results are retained. No negative/failed case may be reported as a passing candidate.
 
@@ -33,3 +33,5 @@ Observed Radxa evidence, 2026-11-13: controller `b0c8d61`, source digest `7c6a61
 The earlier Q3_K_L profile (14,583,005,504 bytes) was superseded by the board-qualified CPU-only Qwen3-Coder-30B-A3B-Instruct **Q4_0 at 16K** (17,304,492,352 bytes, SHA-256 `cb55db3283b0b3790c8bf0b976ce0b09f64d182611e89703186c383c090825c4`). The protected Q4 16K smoke `smoke-9c7b3557` passed, with 14.94 prompt / 6.23 generation tok/s, 17.13 GiB peak under the 18 GiB model ceiling, no OOM. This qualifies *the small protected repair*, not a full release-upgrade queue or long 16K prompts. The model's cgroup, no-swap enforcement, source review, playback qualification and manual deployment gates remain mandatory.
 
 Candidate source-integrity gate: snapshot Git-visible files (including untracked but non-ignored files) after checks; reject any modification during build, hardware validation, export, or prior to publication. The candidate image ID and its archive checksum are separate immutable delivery checks. Do not interpret this source snapshot as complete deterministic image reproducibility.
+
+The pinned historical transition rehearsals now follow the current released integrations: Memories 11.1.2 → 11.1.4 (fork baseline `7a6840dc98b4`), Immich 3.4.1 → 3.4.2 (fork baseline `2cb02a166dac`). These tests DO NOT certify a hypothetical future upstream release; every actual new release must still be reconciled, built and tested independently.

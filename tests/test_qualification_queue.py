@@ -100,7 +100,7 @@ class QualificationQueueTests(unittest.TestCase):
             docker_class.return_value.hardware.assert_not_called()
 
     def test_immich_qualification_is_an_isolated_historical_replay(self):
-        """Never try to upgrade the current 3.4.1 fork to itself."""
+        """Rehearse current 3.4.2 using the pinned 3.4.1 integration baseline."""
         with tempfile.TemporaryDirectory() as temp:
             with patch("qualification_queue.manifest",return_value={"external_model_endpoint":False}), \
                  patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \
@@ -116,11 +116,16 @@ class QualificationQueueTests(unittest.TestCase):
             self.assertEqual(result["status"],"qualified-for-candidate-preparation")
             upgrades=[call for call in jobs.call_args_list if call.args[0]=="immich"]
             self.assertEqual(len(upgrades),1)
-            self.assertEqual(upgrades[0].args[3],"3.4.1")
-            self.assertEqual(upgrades[0].kwargs["source_version"],"3.4.0")
+            self.assertEqual(upgrades[0].args[3],"3.4.2")
+            self.assertEqual(upgrades[0].kwargs["source_version"],"3.4.1")
             self.assertEqual(upgrades[0].kwargs["base_ref"],
-                             "3d82c85b3696f384dc39a8a8a13d9df2a563c558")
+                             "2cb02a166dac")
             self.assertNotIn("publish_code",upgrades[0].kwargs)
+            memories=[call for call in jobs.call_args_list if call.args[0]=="memories"]
+            self.assertEqual(len(memories),1)
+            self.assertEqual(memories[0].args[3],"11.1.4")
+            self.assertEqual(memories[0].kwargs["source_version"],"11.1.2")
+            self.assertEqual(memories[0].kwargs["base_ref"],"7a6840dc98b4")
 
     def test_a_failed_revision_is_not_retried_implicitly(self):
         with tempfile.TemporaryDirectory() as temp:
