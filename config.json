@@ -1,5 +1,5 @@
 {
-  "poll_seconds": 21600,
+  "poll_seconds": 86400,
   "repair_rounds": 3,
   "agent_turns": 48,
   "model_runtime": {
