@@ -54,6 +54,40 @@ class WatcherTests(unittest.TestCase):
                     maintainer.main()
                 poll.assert_called_once()
 
+    def test_discovery_failure_backs_off_instead_of_crash_restarting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            config = workspace / "config.json"
+            config.write_text('{"poll_seconds": 86400}')
+            def sleep(seconds):
+                self.assertEqual(seconds, 3600)
+                raise KeyboardInterrupt
+            with patch.object(sys, "argv", ["maintainer", "watch", "--config", str(config),
+                                            "--workspace", str(workspace)]), \
+                 patch("maintainer.poll_releases", side_effect=OSError("upstream temporarily unavailable")), \
+                 patch("maintainer.seconds_until_next_night", return_value=7200), \
+                 patch("maintainer.time.sleep", side_effect=sleep), \
+                 patch.dict(os.environ, {"AUTO_UPDATE": "true"}, clear=True):
+                with self.assertRaises(KeyboardInterrupt):
+                    maintainer.main()
+
+    def test_disabled_watcher_does_not_touch_builder_or_network(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            config = workspace / "config.json"
+            config.write_text('{"poll_seconds": 86400, "work_window": {"enabled": true}}')
+            with patch.object(sys, "argv", ["maintainer", "watch", "--config", str(config),
+                                            "--workspace", str(workspace)]), \
+                 patch("maintainer.Docker.reap") as reap, \
+                 patch("maintainer.discover") as discover, \
+                 patch("maintainer.seconds_until_next_night", return_value=300), \
+                 patch("maintainer.time.sleep", side_effect=KeyboardInterrupt), \
+                 patch.dict(os.environ, {"AUTO_UPDATE": "false"}, clear=True):
+                with self.assertRaises(KeyboardInterrupt):
+                    maintainer.main()
+                reap.assert_not_called()
+                discover.assert_not_called()
+
     def test_current_releases_produce_no_images_or_jobs(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace=Path(temp)
