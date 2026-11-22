@@ -632,14 +632,21 @@ def main():
             try:
                 with locked(workspace / "maintainer.lock"):
                     recover_jobs(workspace)
-                    if config.get("work_window", {}).get("enabled", False):
+                    if (os.environ.get("AUTO_UPDATE") == "true"
+                            and config.get("work_window", {}).get("enabled", False)):
                         Docker(config, workspace).reap()
                     delay, _, _ = poll_releases(args, config, workspace, profile)
-            except RuntimeError as error:
-                if str(error) != "Another maintainer job is running":
-                    raise
-                delay = max(1, int(config.get("work_window", {}).get("idle_retry_seconds", 300)))
-                print(json.dumps({"status": "busy", "reason": str(error)}), flush=True)
+            except Exception as error:
+                # Network, GitHub and upstream errors should not hot-loop the
+                # Portainer restart policy. Preserve state and try again
+                # without creating or deploying an unqualified candidate.
+                busy = isinstance(error, RuntimeError) and str(error) == "Another maintainer job is running"
+                delay = (max(1, int(config.get("work_window", {}).get("idle_retry_seconds", 300)))
+                         if busy else max(60, min(3600, int(config.get("poll_seconds", 86400)))))
+                print(json.dumps({"status": "busy" if busy else "error",
+                                  "error_type": type(error).__name__,
+                                  "reason": str(error)[:500],
+                                  "retry_seconds": delay}), flush=True)
             # Wake at the next local night-window start, not N hours after
             # a long build. Shorter failure/idle retries remain in effect.
             # Never hold the job lock while sleeping.
