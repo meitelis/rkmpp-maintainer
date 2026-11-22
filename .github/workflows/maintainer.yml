@@ -10,9 +10,9 @@ concurrency:
   group: maintainer-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  smoke:
+  validate:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Unit tests, syntax and Compose validation
@@ -22,8 +22,56 @@ jobs:
           docker compose config --quiet
           docker compose -f portainer-stack.yml config --quiet
           bash -n scripts/migrate-to-portainer.sh
+  llama-cpu-image:
+    needs: validate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # CPU-only Q4 is production. Do not spend ARM64 CI time compiling
+      # the unqualified NPU experiment on every maintainer change.
+      - name: Compile pinned CPU-only Qwen inference engine on ARM64
+        run: |
+          docker build -f Dockerfile.rknpu2 --build-arg LLAMA_RKNPU2=OFF -t local/rkmpp-llama-cpu:712f4de-control1 .
+          docker run --rm --network none --entrypoint /opt/llama/bin/llama-server local/rkmpp-llama-cpu:712f4de-control1 --list-devices > /tmp/cpu-devices.txt 2>&1
+          cat /tmp/cpu-devices.txt
+          if grep -iq rknpu /tmp/cpu-devices.txt; then
+            echo 'CPU-only baseline still advertises RKNPU: invalid benchmark' >&2
+            exit 1
+          fi
+  smoke:
+    needs: validate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build the tested controller
+        run: docker compose build maintainer
+      # Test the deployed PID 1 watcher, not an unused diagnostic worker.
+      - name: Foreground watcher survives a Docker restart
+        run: |
+          name=rkmpp-watcher-ci
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          docker run -d --name "$name" --restart unless-stopped \
+            --network none -e AUTO_UPDATE=false -e AUTO_PUBLISH=false \
+            local/rkmpp-maintainer:prototype-3-portainer watch
+          sleep 1
+          test "$(docker inspect -f '{{.State.Running}}' "$name")" = true
+          docker logs "$name" 2>&1 | grep -F '"status": "idle"'
+          docker restart "$name"
+          sleep 1
+          test "$(docker inspect -f '{{.State.Running}}' "$name")" = true
+          test "$(docker logs "$name" 2>&1 | grep -Fc '"status": "idle"')" -ge 2
+      - name: Actual PHP failure propagation, broken-source rejection and Docker timeout cleanup
+        run: docker compose run --rm maintainer runtime-check --ignore-window
+      # Fail quickly on real isolated fork-script regressions BEFORE downloading
+      # multi-GB model weights and spending minutes on inference.
+      - name: Real isolated Memories deployment-preflight with executable fake Docker
+        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/executor_check.py
       - name: Real ARM64 local-model edit, tests, build and export
-        run: docker compose run --build --rm maintainer smoke
+        run: docker compose run --rm maintainer smoke --ignore-window
+      - name: Real Go startup integration repair and complete Memories candidate checks
+        run: docker compose run --rm --entrypoint python3 maintainer /opt/maintainer/repair_check.py --model-profile smoke --ignore-window
       - name: Logs and stop isolated daemon
         if: always()
         run: |
@@ -32,3 +80,18 @@ jobs:
           sudo find data/jobs -name agent.jsonl -exec tail -n 15 {} \; 2>/dev/null || true
           sudo tail -n 100 data/model.log 2>/dev/null || true
           docker compose down --volumes
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: maintainer-qualification-evidence
+          retention-days: 7
+          path: |
+            data/jobs/**/result.json
+            data/jobs/**/run-manifest.json
+            data/jobs/**/agent.jsonl
+            data/jobs/**/agent-review.json
+            data/jobs/**/model-runtime*.json
+            data/jobs/**/error.txt
+            data/jobs/**/*.log
+            data/model.log
+            data/cleanup-errors.jsonl

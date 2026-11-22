@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from core import command
-from profiles import current_version, git, reconcile, validate
+from profiles import current_version, git, reconcile, sync_contracts, validate, verify_immich_contracts
 
 
 def init(root):
@@ -34,6 +34,10 @@ class ReconciliationTests(unittest.TestCase):
             (fork/"go-vod").mkdir()
             (fork/"go-vod/main.go").write_text(base+'\n// RKMPP custom code\n')
             (fork/"README.md").write_text('Nextcloud Memories 11.1.1\nMeasured on 11.1.1\n')
+            fixture = fork/"tests/fixtures/historical.json"
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text('{"recorded_upstream":"11.1.1"}')
+            (fork/"go-vod/measurement.go").write_text('// recorded on Memories 11.1.1\n')
             info = fork/"memories_rkmpp_v11/appinfo"
             info.mkdir(parents=True)
             (info/"info.xml").write_text('<version>1.1.27</version>')
@@ -45,7 +49,40 @@ class ReconciliationTests(unittest.TestCase):
             self.assertEqual((fork/"README.md").read_text(), 'Nextcloud Memories 11.1.2\nMeasured on 11.1.1\n')
             self.assertEqual(current_version("memories", fork), "11.1.2")
             self.assertIn("1.1.28", (info/"info.xml").read_text())
+            self.assertEqual(fixture.read_text(), '{"recorded_upstream":"11.1.1"}')
+            self.assertIn("11.1.1", (fork/"go-vod/measurement.go").read_text())
             validate(fork)
+
+    def test_immich_upgrade_syncs_ci_and_same_version_deployment(self):
+        baseline = "3.4.1"
+        target = "3.4.2"
+        tag = "local/immich-server:rkmpp-3.4.1-r4-memories"
+        files = {
+            "scripts/build.sh": f"image={tag}\n",
+            ".github/workflows/check.yml": ('    run: sh scripts/build.sh --source-dir "$SRC"\n'
+                                            f"      {tag} " + chr(92) + "\n      --test tests/playback-fragments.test.mjs\n"),
+            "scripts/deploy.sh": ('case "$old_version" in 3.4.1|v3.4.1|3.4.1-rkmpp-*) ;; esac\n'
+                                  '[ "$version" = 3.4.1 ]\n'),
+            "Dockerfile.rkmpp": ('org.opencontainers.image.version="3.4.1-rkmpp-r4-memories"\n'
+                                 'cc.immich-rkmpp.upstream-version="3.4.1"\n'),
+            "compose.override.example.yml": f"    image: {tag}\n",
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, contents in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents)
+            sync_contracts("immich", root, baseline, target)
+            verify_immich_contracts(root, target)
+            for name, stale in files.items():
+                with self.subTest(name=name):
+                    path = root / name
+                    corrected = path.read_text()
+                    path.write_text(stale)
+                    with self.assertRaises(RuntimeError):
+                        verify_immich_contracts(root, target)
+                    path.write_text(corrected)
 
     def test_unresolved_conflicts_fail_validation(self):
         with tempfile.TemporaryDirectory() as temp:

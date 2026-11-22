@@ -39,7 +39,7 @@ mkdir -- "$target_dir/builder"
 # Host GNU cp runs as root, preserving Docker overlay metadata and xattrs.
 cp -a -- "$cache_dir/." "$target_dir/builder/"
 cd -- "$target_dir"
-docker build -t local/rkmpp-maintainer:prototype-3-portainer .
+docker build -t local/rkmpp-maintainer:pr10 .
 docker compose -f portainer-stack.yml config --quiet
 printf '%s\n' "Prepared /armbian/rkmpp-maintainer for Portainer." \
   "In Portainer deploy stack rkmpp-maintainer from main, compose path portainer-stack.yml." \
