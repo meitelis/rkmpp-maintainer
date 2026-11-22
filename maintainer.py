@@ -594,6 +594,11 @@ def poll_releases(args, config, workspace, profile):
             delay = min(delay, gate.get("retry_seconds", 300))
             continue
 
+        # Count a crash or host reboot as an attempt: persist BEFORE launching.
+        # Restart recovery must never hot-loop model/build work indefinitely.
+        state[key] = {"status": "running", "attempts": attempts + 1,
+                      "last_attempt_at": now.isoformat()}
+        save_json(state_path, state)
         result = run_job(record["project"], config, workspace, record["latest"],
                          publish_code=auto_publish, no_agent=args.no_agent, model_profile=profile)
         # A built debug job without a verified archive is not a release.

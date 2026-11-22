@@ -9,17 +9,19 @@ import maintainer
 
 
 class PortainerTests(unittest.TestCase):
-    def test_new_stack_is_fail_closed_until_explicit_autoupdate_opt_in(self):
+    def test_git_managed_stack_has_single_supervised_watcher_and_builder(self):
         root = Path(__file__).resolve().parents[1]
         stack = (root / "portainer-stack.yml").read_text()
-        self.assertIn('AUTO_UPDATE: ${AUTO_UPDATE:-false}', stack)
+        self.assertIn('AUTO_UPDATE: ${RELEASE_WATCH_ENABLED:-true}', stack)
         self.assertIn('AUTO_PUBLISH: ${AUTO_PUBLISH:-false}', stack)
-        self.assertIn('QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-true}', stack)
-        self.assertIn('entrypoint: ["python3", "/opt/maintainer/qualification_queue.py"]', stack)
-        qualifier = stack.split('  qualifier:', 1)[1].split('\nnetworks:', 1)[0]
-        self.assertIn('restart: unless-stopped', qualifier)
-        self.assertNotIn('GITHUB_TOKEN:', qualifier)
-        self.assertNotIn('MODEL_ENDPOINT:', qualifier)
+        self.assertNotIn('  qualifier:', stack)
+        self.assertIn('  builder:', stack)
+        self.assertIn('  maintainer:', stack)
+        controller = stack.split('  maintainer:',1)[1].split('\\nnetworks:',1)[0]
+        self.assertIn('restart: unless-stopped', controller)
+        self.assertIn('pull_policy: never', controller)
+        self.assertIn('command: ["${MAINTAINER_ACTION:-watch}"]', controller)
+        self.assertNotIn('/var/run/docker.sock', controller)
         conf = json.loads((root / "config.json").read_text())
         self.assertEqual(conf["poll_seconds"], 86400)
         self.assertEqual(conf["work_window"]["timezone"], "Europe/Dublin")

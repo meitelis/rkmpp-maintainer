@@ -129,6 +129,32 @@ class WatcherTests(unittest.TestCase):
             self.assertIn("memories:11.1.5",state)
             self.assertNotIn("immich:3.4.1",state)
 
+    def test_interrupted_build_is_bounded_and_restart_respects_cooldown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace=Path(temp)
+            args=SimpleNamespace(action="watch",ignore_window=False,
+                                 publish=False,no_agent=False)
+            records=[{"project":"memories","latest":"11.1.5","update":True}]
+            with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"false"},clear=True), \
+                 patch("maintainer.discover",return_value=records), \
+                 patch("maintainer.admission",return_value={"allowed":True}), \
+                 patch("maintainer.run_job",side_effect=KeyboardInterrupt("shutdown")):
+                with self.assertRaises(KeyboardInterrupt):
+                    maintainer.poll_releases(args,{"release_retry_seconds":3600},workspace,"coding")
+            state=json.loads((workspace/"state.json").read_text())["memories:11.1.5"]
+            self.assertEqual(state["status"],"running")
+            self.assertEqual(state["attempts"],1)
+            with patch.dict(os.environ,{"AUTO_UPDATE":"true","AUTO_PUBLISH":"false"},clear=True), \
+                 patch("maintainer.discover",return_value=records), \
+                 patch("maintainer.admission") as admission, \
+                 patch("maintainer.run_job") as run:
+                delay,failed,deferred=maintainer.poll_releases(
+                    args,{"release_retry_seconds":3600},workspace,"coding")
+            self.assertTrue(deferred)
+            self.assertFalse(failed)
+            admission.assert_not_called()
+            run.assert_not_called()
+
     def test_failed_candidate_retries_but_completed_candidate_does_not(self):
         now = datetime.datetime(2026, 11, 14, 0, 0, tzinfo=datetime.timezone.utc)
         failed = {"status": "failed", "attempts": 1, "last_attempt_at": now.isoformat()}

@@ -51,9 +51,9 @@ services:
     environment:
       DOCKER_HOST: tcp://builder:2375
       DOCKER_TLS_CERTDIR: ""
-      # Fail closed until a real full upgrade and isolation test is qualified.
-      # With false, the controller makes NO release polling requests.
-      AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      # Watch stable upstream releases, but never deploy production apps.
+      # Separate override avoids old AUTO_UPDATE=false Portainer stack values.
+      AUTO_UPDATE: ${RELEASE_WATCH_ENABLED:-true}
       # Independent opt-in: publish only fully hardware-qualified candidates.
       AUTO_PUBLISH: ${AUTO_PUBLISH:-false}
       # A fine-grained token scoped to only the two fork repositories.
@@ -71,8 +71,7 @@ services:
       - /dev/mpp_service:/dev/mpp_service
       - /dev/rga:/dev/rga
       - /dev/mali0:/dev/mali0
-    # With AUTO_UPDATE=true, align candidate discovery with Dublin midnight.
-    # Otherwise watch is idle; use MAINTAINER_ACTION=idle for manual jobs.
+    # The watcher is Docker PID 1; heavy new jobs require Dublin night/idle admission.
     command: ["${MAINTAINER_ACTION:-watch}"]
     volumes:
       - type: bind
@@ -81,43 +80,6 @@ services:
         bind:
           create_host_path: false
     networks: [maintainer]
-  # One supervised worker, opted into separately from upstream release updates.
-  qualifier:
-    image: local/rkmpp-maintainer:pr10
-    pull_policy: never
-    init: true
-    restart: unless-stopped
-    mem_limit: 512m
-    depends_on:
-      builder:
-        condition: service_healthy
-    environment:
-      DOCKER_HOST: tcp://builder:2375
-      DOCKER_TLS_CERTDIR: ""
-      # Explicit owner opt-in for this Git-managed Portainer deployment.
-      # The stage worker still observes the 00:00–08:00 idle admission gate.
-      QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-true}
-    entrypoint: ["python3", "/opt/maintainer/qualification_queue.py"]
-    command: ["--serve", "--model-profile", "coding"]
-    healthcheck:
-      test: ["CMD", "python3", "/opt/maintainer/qualification_queue.py", "--health"]
-      interval: 30s
-      timeout: 10s
-      retries: 2
-      start_period: 15s
-    # Hardware is tested only through the separate inner daemon; no token.
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/dma_heap:/dev/dma_heap
-      - /dev/mpp_service:/dev/mpp_service
-      - /dev/rga:/dev/rga
-      - /dev/mali0:/dev/mali0
-    volumes:
-      - type: bind
-        source: /armbian/rkmpp-maintainer/data
-        target: /workspace
-        bind:
-          create_host_path: false
-    networks: [maintainer]
+
 networks:
   maintainer:
