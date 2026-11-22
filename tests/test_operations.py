@@ -28,7 +28,7 @@ class OperationsTests(unittest.TestCase):
             docker = Docker({"node_image":"node", "go_image":"go", "php_image":"php"}, root)
             calls = []
             with patch.object(docker, "run", side_effect=lambda image, root, args, *rest: calls.append((image,args))), \
-                 patch("runner.command"):
+                 patch.object(docker, "source_script"):
                 docker.checks("memories", root, root / "checks.log")
             shell_command = next(args[-1] for image,args in calls if image == "php")
             result = subprocess.run([os.environ.get("TEST_SHELL", "/bin/sh"), "-c",
@@ -36,6 +36,56 @@ class OperationsTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("lint failed", result.stderr)
             self.assertFalse((root / "compatibility-ran").exists())
+
+    def test_repo_scripts_are_isolated_from_controller_token_and_host_daemon(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script = root / "scripts" / "build-v11.sh"
+            script.parent.mkdir()
+            script.write_text("#!/bin/sh\nexit 0\n")
+            docker = Docker({}, root)
+            calls = []
+            def invoke(args, **kwargs):
+                calls.append(args)
+                if args[:3] == ["docker", "image", "inspect"]:
+                    return ""
+                if args[:2] == ["docker", "ps"]:
+                    return ""
+                return ""
+            with patch.object(docker, "verify"), \
+                 patch("runner.command", side_effect=invoke), \
+                 patch.dict(os.environ, {"GITHUB_TOKEN": "do-not-expose", "AUTO_PUBLISH": "true"}):
+                docker.source_script("memories", root, "scripts/build-v11.sh",
+                                     root / "build.log", docker_socket=True,
+                                     env={"MEMORIES_RKMPP_IMAGE": "local/memories-rkmpp:test"})
+            run = next(args for args in calls if args[:3] == ["docker", "run", "--rm"])
+            self.assertIn("--network", run)
+            self.assertEqual(run[run.index("--network") + 1], "none")
+            self.assertIn("--read-only", run)
+            self.assertIn("--cap-drop", run)
+            self.assertIn("ALL", run)
+            self.assertIn("no-new-privileges", run)
+            self.assertIn("type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock", run)
+            self.assertNotIn("--privileged", run)
+            self.assertNotIn("GITHUB_TOKEN", " ".join(run))
+            self.assertNotIn("do-not-expose", " ".join(run))
+            self.assertIn("scripts/build-v11.sh", run)
+            self.assertFalse(any(a[0] == "sh" for a in calls))
+
+    def test_executor_refuses_arbitrary_scripts_and_token_env(self):
+        with tempfile.TemporaryDirectory() as temp:
+            docker = Docker({}, temp)
+            with patch.object(docker, "verify") as verify:
+                with self.assertRaisesRegex(RuntimeError, "unreviewed source script"):
+                    docker.source_script("memories", temp, "scripts/deploy-v11.sh", Path(temp)/"out.log",
+                                         docker_socket=True)
+                with self.assertRaisesRegex(RuntimeError, "unexpected executor environment"):
+                    docker.source_script("memories", temp, "scripts/build-v11.sh", Path(temp)/"out.log",
+                                         env={"GITHUB_TOKEN": "secret"})
+                with self.assertRaisesRegex(RuntimeError, "must never receive Docker"):
+                    docker.source_script("memories", temp, "scripts/test-v11-deploy-preflight.sh",
+                                         Path(temp)/"out.log", docker_socket=True)
+                verify.assert_not_called()
 
     def test_logging_failure_still_removes_model_and_preserves_primary_error(self):
         with tempfile.TemporaryDirectory() as temp:
