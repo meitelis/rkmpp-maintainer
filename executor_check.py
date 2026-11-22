@@ -35,12 +35,13 @@ def main():
             probe_root = Path(directory) / "registry-probe"
             probe_script = probe_root / "scripts" / "build-v11.sh"
             probe_script.parent.mkdir(parents=True)
-            probe_script.write_text(
-                '#!/bin/sh\\nset -eu\\n'
-                'docker build --pull -t "$MEMORIES_RKMPP_IMAGE" - <<\\'DOCKERFILE\\'\\n'
-                'FROM docker.io/library/busybox:1.37.0\\n'
-                'RUN true\\n'
-                'DOCKERFILE\\n')
+            probe_script.write_text("""#!/bin/sh
+set -eu
+docker build --pull -t "$MEMORIES_RKMPP_IMAGE" - <<'DOCKERFILE'
+FROM docker.io/library/busybox:1.37.0
+RUN true
+DOCKERFILE
+""")
             probe_tag = "local/rkmpp-registry-auth-probe:" + uuid.uuid4().hex[:12]
             probe_log = Path(directory) / "registry-probe.log"
             try:
@@ -48,13 +49,10 @@ def main():
                     "memories", probe_root, "scripts/build-v11.sh",
                     probe_log, timeout=240, docker_socket=True,
                     env={"MEMORIES_RKMPP_IMAGE": probe_tag})
-                if not "naming to" in probe_log.read_text(errors="replace"):
-                    # A zero-exit script that failed to create the expected
-                    # image is not a real successful BuildKit round-trip.
-                    built = command(["docker", "image", "inspect", probe_tag,
-                                     "--format", "{{.Id}}"], timeout=30)
-                    if not built.startswith("sha256:"):
-                        raise RuntimeError("BuildKit registry probe did not produce an image")
+                built = command(["docker", "image", "inspect", probe_tag,
+                                 "--format", "{{.Id}}"], timeout=30)
+                if not built.startswith("sha256:"):
+                    raise RuntimeError("BuildKit registry probe did not produce an image")
             except Exception:
                 if probe_log.is_file():
                     print(probe_log.read_text(errors="replace")[-16000:], flush=True)
