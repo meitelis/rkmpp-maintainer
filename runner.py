@@ -308,10 +308,15 @@ class Docker:
                 options += ["--device", "/dev/mali0:/dev/mali0"]
         for key, value in sorted((env or {}).items()):
             options += ["-e", key + "=" + str(value)]
-        # The preflight script is deliberately assertion-heavy and otherwise
-        # silent on failure. Preserve each assertion in the isolated job log.
-        trace = ["-x"] if script == "scripts/test-v11-deploy-preflight.sh" else []
-        options += ["--entrypoint", shell, image, *trace, script, *arguments]
+        if script == "scripts/test-v11-deploy-preflight.sh":
+            # The test writes a fake executable 'docker' under mktemp -d.
+            # Keep /tmp non-executable and create a *separate*, tiny executable
+            # scratch tmpfs for this mock only. Docker's default tmpfs has
+            # noexec, which previously caused the first mock assertion to fail
+            # silently despite otherwise passing source tests.
+            options += ["--tmpfs", "/run/preflight-mocks:rw,exec,nosuid,nodev,size=16m,mode=1777",
+                        "-e", "TMPDIR=/run/preflight-mocks"]
+        options += ["--entrypoint", shell, image, script, *arguments]
         try:
             return command(options, timeout=timeout, log=log)
         finally:
