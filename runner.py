@@ -283,9 +283,17 @@ class Docker:
                     timeout=1800)
         name = "rkmpp-maintainer-script-" + uuid.uuid4().hex[:12]
         shell = "bash" if script == "scripts/test-v11-rkmpp.sh" else "sh"
+        # BuildKit delegates registry token retrieval to the Docker CLI
+        # session, not always the daemon. A client in --network=none cannot
+        # fetch Docker Hub auth tokens and silently breaks real image builds.
+        # A client granted the *inner Docker socket* already controls its
+        # network-enabled child containers: network=none on that client was
+        # not a meaningful exfiltration boundary. Keep truly socket-free
+        # preflight offline; allow only the inner build client onto bridge.
+        client_network = "bridge" if docker_socket else "none"
         options = ["docker", "run", "--rm", "--name", name,
                    "--label", "rkmpp.maintainer.transient=true",
-                   "--network", "none", "--read-only",
+                   "--network", client_network, "--read-only",
                    "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                    "--pids-limit", "256", "--cpus", "2",
