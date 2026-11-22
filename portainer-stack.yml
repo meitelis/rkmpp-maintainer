@@ -51,7 +51,9 @@ services:
     environment:
       DOCKER_HOST: tcp://builder:2375
       DOCKER_TLS_CERTDIR: ""
-      AUTO_UPDATE: ${AUTO_UPDATE:-false}
+      # Prepare independently hardware-qualified candidates when new releases appear.
+      # Does not deploy running Immich/Memories services.
+      AUTO_UPDATE: ${AUTO_UPDATE:-true}
       # Independent opt-in: publish only fully hardware-qualified candidates.
       AUTO_PUBLISH: ${AUTO_PUBLISH:-false}
       # A fine-grained token scoped to only the two fork repositories.
@@ -69,8 +71,8 @@ services:
       - /dev/mpp_service:/dev/mpp_service
       - /dev/rga:/dev/rga
       - /dev/mali0:/dev/mali0
-    # Monitor releases by default; AUTO_UPDATE=false prevents unattended builds.
-    # Portainer MAINTAINER_ACTION environment setting may override this default.
+    # Nightly release detection + candidate preparation when AUTO_UPDATE=true.
+    # Portainer MAINTAINER_ACTION may override watch with idle for manual jobs.
     command: ["${MAINTAINER_ACTION:-watch}"]
     volumes:
       - type: bind
