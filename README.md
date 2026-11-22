@@ -20,7 +20,7 @@ It prepares update candidates; **you deploy running applications manually**.
    automatically merge a PR. After source review, manual deployment and actual
    client playback checks, the owner may explicitly accept that exact image/PR.
 
-A passing LLM report, Docker build or CI job is **not** sufficient to approve
+The Git-visible candidate source (tracked and unignored untracked files) is\nfingerprinted after independent checks and rechecked after build, hardware\ntests, export, and before PR publication. Generated ignored caches are not\npart of this fingerprint; the independently tested Docker image ID and\nexport archive checksum remain required. Any detected source mutation fails\nthe candidate instead of silently publishing changed source.\n\nA passing LLM report, Docker build or CI job is **not** sufficient to approve
 a candidate. See [qualification](QUALIFICATION.md) and
 [delivery gates](READY_IMAGES.md).
 

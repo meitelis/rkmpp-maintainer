@@ -20,7 +20,7 @@ from profiles import PROJECTS, current_version, git, reconcile, validate
 from repair_fixture import BROKEN, REFERENCE, create_fixture
 from runner import Docker
 from limits import job_budget, require_space
-from evidence import record_runtime, save_manifest
+from evidence import candidate_source_digest, record_runtime, save_manifest
 from qualification import runtime_checks
 from model_settings import settings
 from schedule import admission, seconds_until_next_night, wait_for_window
@@ -211,10 +211,18 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                     phase(job, result, f"checks-{attempt + 1}")
                     validate(root)
                     docker.checks(project, root, job / f"checks-{attempt}.log")
+                    # Snapshot the exact candidate before invoking source-controlled
+                    # build/hardware scripts with access to the isolated daemon.
+                    source_id = candidate_source_digest(root)
+                    result["candidate_source_sha256"] = source_id
                     phase(job, result, f"build-{attempt + 1}")
                     docker.build(project, root, tag, job / f"build-{attempt}.log")
+                    if candidate_source_digest(root) != source_id:
+                        raise RuntimeError("Candidate source changed during build; review and rebuild")
                     phase(job, result, f"hardware-{attempt + 1}")
                     hardware = docker.hardware(project, root, tag, job / f"hardware-{attempt}.log")
+                    if candidate_source_digest(root) != source_id:
+                        raise RuntimeError("Candidate source changed during hardware checks; review and rebuild")
                     if not isinstance(hardware, dict) or hardware.get("ok") is not True or not hardware.get("image_id"):
                         raise RuntimeError("Independent RK3588 hardware qualification was not completed")
                     result["hardware_qualification"] = hardware
@@ -236,7 +244,11 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             if hardware is None:
                 raise RuntimeError("Missing successful RK3588 hardware qualification")
             phase(job, result, "export")
+            if candidate_source_digest(root) != result["candidate_source_sha256"]:
+                raise RuntimeError("Candidate source changed after hardware qualification")
             result.update(image=tag, image_id=docker.export(tag, job / "image.tar"))
+            if candidate_source_digest(root) != result["candidate_source_sha256"]:
+                raise RuntimeError("Candidate source changed during export")
             if result["image_id"] != hardware["image_id"]:
                 raise RuntimeError("Exported image differs from hardware-qualified candidate")
             reviewed = not no_agent and result["agent_review"].get("review_complete") is True
@@ -271,6 +283,8 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
                 if not reviewed or result["kind"] != "release-candidate":
                     raise RuntimeError("Publishing requires a reviewed, hardware-qualified release candidate")
                 try:
+                    if candidate_source_digest(root) != result["candidate_source_sha256"]:
+                        raise RuntimeError("Candidate source changed before publication")
                     result.update(publish(project, root, target, job))
                 except Exception as error:
                     result["publication_error"] = str(error)
@@ -323,6 +337,8 @@ def publish_existing(workspace, job_name):
     # Re-check the original archive rather than trusting a retained status bit.
     if verify_release_image(job, result) != result.get("delivery"):
         raise RuntimeError("Qualified candidate delivery metadata changed after export")
+    if candidate_source_digest(job / "source") != result.get("candidate_source_sha256"):
+        raise RuntimeError("Candidate source changed since source/build qualification")
     docker = Docker(json.loads((HERE / "config.json").read_text()), workspace)
     docker.verify()
     image_id = command(["docker", "image", "inspect", result["image"], "--format", "{{.Id}}"], timeout=30)

@@ -47,7 +47,7 @@ class JobTests(unittest.TestCase):
                 return run_agent(*args, **kwargs, responder=lambda *_: json.dumps({
                     'action':'finish', 'summary':'Reporting pause pending investigation. I will continue next turn.',
                     'review_complete':True, 'blockers':[]}))
-            with patch('maintainer.prepare', side_effect=prepare), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), \
                  patch('maintainer.run_agent', side_effect=false_finish), \
                  patch('maintainer.Docker') as cls, patch('maintainer.publish') as publish:
                 cls.return_value.model.return_value.__enter__.return_value = 'http://local'
@@ -67,7 +67,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), \
                  patch('maintainer.run_agent', side_effect=AgentBlocked('Agent reported blocker: protected file')), \
                  patch('maintainer.Docker') as cls, patch('maintainer.publish') as publish:
                 docker = cls.return_value
@@ -90,7 +90,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.Docker') as cls, patch('maintainer.publish') as publish:
                 docker = cls.return_value
                 docker.checks.side_effect = RuntimeError('regression failed')
@@ -113,7 +113,7 @@ class JobTests(unittest.TestCase):
                 events.append('model-loaded')
                 try: yield 'http://local'
                 finally: events.append('model-unloaded')
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='diff'), patch('maintainer.run_agent', return_value={
                      'summary':'done', 'review_complete':True, 'blockers':[], 'assessment':'model-self-report'}), \
                  patch('maintainer.Docker') as cls:
@@ -139,7 +139,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 (root/'memories_rkmpp_v11').mkdir(parents=True); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='patch'), patch('maintainer.Docker') as cls:
                 cls.return_value.export.return_value = 'sha256:fixture'
                 cls.return_value.hardware.return_value = {'ok': True, 'image_id': 'sha256:fixture'}
@@ -160,7 +160,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='diff'), patch('maintainer.Docker') as cls:
                 docker = cls.return_value
                 docker.hardware.side_effect = RuntimeError('VPU hardware matrix failed')
@@ -177,7 +177,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='diff'), patch('maintainer.Docker') as cls:
                 docker = cls.return_value
                 docker.hardware.return_value = {'ok': True, 'image_id': 'sha256:tested'}
@@ -201,7 +201,7 @@ class JobTests(unittest.TestCase):
                 calls.append('model-start')
                 try: yield 'http://local'
                 finally: calls.append('model-stop')
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='diff'), \
                  patch('maintainer.run_agent', return_value={
                      'summary':'source repair verified','review_complete':True,
@@ -236,7 +236,7 @@ class JobTests(unittest.TestCase):
                 root, upstream = job/'source', job/'upstream'
                 root.mkdir(); upstream.mkdir()
                 return root, upstream, [], []
-            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.validate'), \
+            with patch('maintainer.prepare', side_effect=prepare), patch('maintainer.candidate_source_digest', return_value='a'*64), patch('maintainer.validate'), \
                  patch('maintainer.git', return_value='diff'), \
                  patch('maintainer.run_agent', return_value={
                      'summary':'tried','review_complete':True,'assessment':'complete','blockers':[]}), \
