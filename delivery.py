@@ -61,14 +61,23 @@ def verify_release_image(job, result):
         raise RuntimeError("Candidate Docker export checksum mismatch")
     verify_archive_config(archive, image, image_id)
 
+    helper_digest = None
     if result.get("project") == "memories":
         helper = job / "memories-helper.tar.gz"
         if helper.is_symlink() or not helper.is_file() or not tarfile.is_tarfile(helper):
             raise RuntimeError("Memories release requires its matching Nextcloud helper")
+        recorded = result.get("helper_sha256")
+        if not isinstance(recorded, str) or not re.fullmatch("[a-f0-9]{64}", recorded):
+            raise RuntimeError("Memories helper requires a recorded SHA256")
+        with helper.open("rb") as handle:
+            helper_digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        if helper_digest != recorded:
+            raise RuntimeError("Memories helper checksum changed since candidate qualification")
     return {"image": image, "image_id": image_id,
             "archive": str(archive), "sha256": actual,
             "bytes": archive.stat().st_size,
-            "helper": str(job / "memories-helper.tar.gz") if result.get("project") == "memories" else None}
+            "helper": str(job / "memories-helper.tar.gz") if result.get("project") == "memories" else None,
+            "helper_sha256": helper_digest}
 
 
 def verify_archive_config(archive, image, image_id):
@@ -83,8 +92,12 @@ def verify_archive_config(archive, image, image_id):
             manifests = json.load(stream)
             if not isinstance(manifests, list):
                 raise RuntimeError("Docker export has invalid manifest entries")
+            names = [entry.name for entry in saved.getmembers()]
+            if len(names) != len(set(names)):
+                raise RuntimeError("Docker export contains ambiguous duplicate members")
             matches = [entry for entry in manifests if isinstance(entry, dict)
-                       and image in entry.get("RepoTags", [])]
+                       and isinstance(entry.get("RepoTags"), list)
+                       and image in entry["RepoTags"]]
             if len(matches) != 1:
                 raise RuntimeError("Docker export must contain exactly one matching candidate tag")
             config_name = matches[0].get("Config")
@@ -97,8 +110,34 @@ def verify_archive_config(archive, image, image_id):
             config_stream = saved.extractfile(configuration)
             if config_stream is None:
                 raise RuntimeError("Docker export lacks image config")
-            config_digest = hashlib.sha256(config_stream.read()).hexdigest()
+            config_bytes = config_stream.read()
+            config_digest = hashlib.sha256(config_bytes).hexdigest()
             if config_digest != image_id.removeprefix("sha256:"):
                 raise RuntimeError("Docker export config does not match hardware-tested image ID")
+            config = json.loads(config_bytes)
+            rootfs = config.get("rootfs", {}) if isinstance(config, dict) else {}
+            diff_ids = rootfs.get("diff_ids") if isinstance(rootfs, dict) else None
+            layers = matches[0].get("Layers")
+            if (config.get("architecture") != "arm64" or rootfs.get("type") != "layers"
+                    or not isinstance(layers, list) or not isinstance(diff_ids, list)
+                    or len(layers) != len(diff_ids)):
+                raise RuntimeError("Docker export layers disagree with ARM64 config")
+            for path, expected_digest in zip(layers, diff_ids):
+                if (not isinstance(path, str) or path.startswith("/")
+                        or ".." in path.split("/") or
+                        not isinstance(expected_digest, str) or
+                        IMAGE_ID.fullmatch(expected_digest) is None):
+                    raise RuntimeError("Docker export has invalid layer path/digest")
+                member = saved.getmember(path)
+                if not member.isfile() or member.size <= 0:
+                    raise RuntimeError("Docker export has missing/empty layer: " + path)
+                source = saved.extractfile(member)
+                if source is None:
+                    raise RuntimeError("Docker export has unreadable layer: " + path)
+                digest = hashlib.sha256()
+                while block := source.read(1024 * 1024):
+                    digest.update(block)
+                if digest.hexdigest() != expected_digest.removeprefix("sha256:"):
+                    raise RuntimeError("Docker export layer checksum mismatch: " + path)
     except (tarfile.TarError, OSError, json.JSONDecodeError, KeyError) as error:
         raise RuntimeError("Docker export is invalid: " + str(error)) from error

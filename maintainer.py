@@ -271,8 +271,11 @@ def run_job(project, config, workspace, target, base_ref="main", source_version=
             (job / "candidate.diff").write_text(git(root, "diff", "HEAD") + "\n")
             result["candidate_diff_sha256"] = hashlib.sha256((job / "candidate.diff").read_bytes()).hexdigest()
             if project == "memories":
-                with tarfile.open(job / "memories-helper.tar.gz", "w:gz") as archive:
+                helper_path = job / "memories-helper.tar.gz"
+                with tarfile.open(helper_path, "w:gz") as archive:
                     archive.add(root / "memories_rkmpp_v11", arcname="memories_rkmpp_v11", recursive=True)
+                with helper_path.open("rb") as handle:
+                    result["helper_sha256"] = hashlib.file_digest(handle, "sha256").hexdigest()
             # Do not advertise a release until its saved image is complete,
             # matches the hardware-tested ID, and can be loaded by Docker.
             if deliverable:

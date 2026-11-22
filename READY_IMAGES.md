@@ -78,3 +78,5 @@ passes CI and a real board qualification cycle. The controller's
 `AUTO_UPDATE=false` default is retained.
 
 Owner-reviewed deployment is a separate state: `deployment_approved=false` and `ready_to_deploy=false` until the exact candidate passes human source review, live-client playback, and the owner-authorized merge. Candidate PRs start as drafts; an owner must mark the PR ready for review after those checks before invoking accept-deployment. Lessons are promoted only after this acceptance, never merely from CI or a hardware suite.
+
+Delivery validation checks *every Docker-save layer* against the ARM64 config `rootfs.diff_ids`, in addition to the exported tar checksum and tested image config ID. For Memories, the generated helper archive is recorded with its own SHA256 and rechecked before publication. This rejects truncated/replaced layers and helper swaps without assuming that successful tar creation implies successful deployment.
