@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import maintainer
-from schedule import admission, host_idle, window
+from schedule import admission, host_idle, seconds_until_next_night, window
 
 UTC = datetime.timezone.utc
 RULE = {"enabled":True, "timezone":"Europe/Dublin", "start_hour":0, "end_hour":8, "idle_only":True}
@@ -39,6 +39,24 @@ class ScheduleTests(unittest.TestCase):
     def test_next_start_crosses_dst_using_local_midnight(self):
         result = window({"work_window":RULE}, datetime.datetime(2026,10,24,12,tzinfo=UTC))
         self.assertEqual(result["next_start"], "2026-10-25T00:00:00+01:00")
+
+    def test_watcher_wakes_at_next_local_midnight_even_after_late_build(self):
+        config = {"work_window": RULE}
+        # 04:00 UTC in November => next midnight in 20 hours.
+        now = datetime.datetime(2026, 11, 22, 4, 0, tzinfo=UTC)
+        self.assertEqual(seconds_until_next_night(config, now), 20 * 3600 + 1)
+        # 23:59:30 UTC => wake at midnight, not six/24 hours later.
+        late = datetime.datetime(2026, 11, 22, 23, 59, 30, tzinfo=UTC)
+        self.assertEqual(seconds_until_next_night(config, late), 31)
+
+    def test_watcher_nightly_schedule_handles_dublin_dst_transitions(self):
+        config = {"work_window": RULE}
+        # Autumn: 25 hours from midnight on fallback day to next midnight.
+        autumn = datetime.datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
+        self.assertEqual(seconds_until_next_night(config, autumn), 25 * 3600 + 1)
+        # Spring: 23 hours from midnight on forward day to next midnight.
+        spring = datetime.datetime(2026, 3, 29, 0, 0, tzinfo=UTC)
+        self.assertEqual(seconds_until_next_night(config, spring), 23 * 3600 + 1)
 
     def test_busy_host_defers_even_during_night_window(self):
         with patch("schedule.host_idle", return_value={"allowed":False,"reason":"busy"}) as idle:
