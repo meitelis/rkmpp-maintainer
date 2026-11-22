@@ -35,3 +35,5 @@ The earlier Q3_K_L profile (14,583,005,504 bytes) was superseded by the board-qu
 Candidate source-integrity gate: snapshot Git-visible files (including untracked but non-ignored files) after checks; reject any modification during build, hardware validation, export, or prior to publication. The candidate image ID and its archive checksum are separate immutable delivery checks. Do not interpret this source snapshot as complete deterministic image reproducibility.
 
 The pinned historical transition rehearsals now follow the current released integrations: Memories 11.1.2 → 11.1.4 (fork baseline `7a6840dc98b4`), Immich 3.4.1 → 3.4.2 (fork baseline `2cb02a166dac`). These tests DO NOT certify a hypothetical future upstream release; every actual new release must still be reconciled, built and tested independently.
+
+The qualification cache identity includes the operator's `--ignore-window` choice, coding/smoke profile and observed Linux kernel release. Manual-outside-window tests cannot be reused as proof of a scheduled run; kernel changes invalidate old checkpoint identities.

@@ -116,7 +116,9 @@ def qualified_model_memory(state, config, profile):
 
 def run_suite(config, workspace, profile="coding", ignore_window=False, cases=None):
     workspace=Path(workspace)
-    identity=manifest(config,Path(__file__).parent,smoke=profile=="smoke")
+    identity={**manifest(config,Path(__file__).parent,smoke=profile=="smoke"),
+              "qualification_profile":profile,
+              "qualification_window_override":bool(ignore_window)}
     key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:12]
     directory=workspace/"qualifications"/key
     directory.mkdir(parents=True,exist_ok=True)

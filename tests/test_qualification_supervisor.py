@@ -60,7 +60,8 @@ class QualificationSupervisorTests(unittest.TestCase):
         work.assert_called_once()
 
     def persisted(self, root, steps, status="running", retries=None):
-        identity = {"external_model_endpoint":False,"revision":"supervisor-test"}
+        identity = {"external_model_endpoint":False,"revision":"supervisor-test",
+                    "qualification_profile":"coding","qualification_window_override":False}
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
         report = root / "qualifications" / key / "result.json"
         report.parent.mkdir(parents=True,exist_ok=True)
@@ -123,6 +124,21 @@ class QualificationSupervisorTests(unittest.TestCase):
             work.assert_not_called()
 
 
+
+    def test_manual_override_cannot_certify_scheduled_qualification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            identity={"external_model_endpoint":False, "revision":"same-code"}
+            with patch("qualification_queue.manifest",return_value=identity), \
+                 patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \
+                 patch("qualification_queue.qualified_model_memory",return_value=1):
+                manual=run_suite({},root,ignore_window=True,
+                    cases=[("only",lambda:{"status":"passed"},"passed")])
+                scheduled=run_suite({},root,ignore_window=False,
+                    cases=[("only",lambda:{"status":"passed"},"passed")])
+            self.assertNotEqual(manual["report"],scheduled["report"])
+            self.assertTrue(manual["identity"]["qualification_window_override"])
+            self.assertFalse(scheduled["identity"]["qualification_window_override"])
 
     def test_real_sigkill_during_a_stage_recovers_exactly_once(self):
         # This crosses a real OS process boundary: not a mocked running-step

@@ -31,6 +31,7 @@ def manifest(config, directory, smoke=False):
     return {"schema_version": 1, "controller_source_sha256": source_digest(directory),
             "config_sha256": hashlib.sha256(canonical).hexdigest(),
             "python": platform.python_version(), "architecture": platform.machine(),
+            "kernel_release": platform.release(),
             "external_model_endpoint": external,
             "model_identity_verified": False,
             "model": None if external else spec,
