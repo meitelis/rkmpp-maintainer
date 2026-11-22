@@ -245,6 +245,75 @@ class Docker:
             finally:
                 self.cleanup(name, Path(metrics_path).parent / "model.log" if metrics_path else self.workspace / "model.log")
 
+    def source_script(self, project, root, script, log, *, arguments=(),
+                      timeout=1800, env=None, docker_socket=False,
+                      scratch=None, hardware=False):
+        """Execute fork scripts outside the token-bearing controller process.
+
+        The disposable runner has no controller /proc, environment, GitHub
+        token, or access to the outer host Docker daemon. Docker CLI access,
+        when required, is ONLY to the existing isolated inner Docker daemon.
+        It remains a privileged capability inside that daemon, not a full
+        untrusted-code sandbox. Manual acceptance still gates deployment.
+        """
+        allowed = {
+            "memories": {"scripts/build-v11.sh", "scripts/test-v11-deploy-preflight.sh",
+                        "scripts/test-v11-rkmpp.sh"},
+            "immich": {"scripts/build.sh"},
+        }
+        if script not in allowed.get(project, set()):
+            raise RuntimeError("Refusing unreviewed source script: " + str(script))
+        if script == "scripts/test-v11-deploy-preflight.sh" and docker_socket:
+            raise RuntimeError("Preflight must never receive Docker daemon access")
+        safe_env = {"MEMORIES_RKMPP_IMAGE", "RKMPP_SMOKE_SKIP_BUILD", "RKMPP_SMOKE_OUTPUT"}
+        if any(key not in safe_env for key in (env or {})):
+            raise RuntimeError("Refusing unexpected executor environment")
+        self.verify()
+        root = Path(root).resolve()
+        source = Path(__file__).resolve().parent
+        dockerfile = source / "Dockerfile.executor"
+        if not dockerfile.is_file():
+            raise RuntimeError("Missing trusted Dockerfile.executor")
+        digest = hashlib.sha256(dockerfile.read_bytes()).hexdigest()[:12]
+        image = "local/rkmpp-script-executor:" + digest
+        try:
+            command(["docker", "image", "inspect", image], timeout=20)
+        except RuntimeError:
+            command(["docker", "build", "-f", str(dockerfile), "-t", image, str(source)],
+                    timeout=1800)
+        name = "rkmpp-maintainer-script-" + uuid.uuid4().hex[:12]
+        shell = "bash" if script == "scripts/test-v11-rkmpp.sh" else "sh"
+        options = ["docker", "run", "--rm", "--name", name,
+                   "--label", "rkmpp.maintainer.transient=true",
+                   "--network", "none", "--read-only",
+                   "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                   "--pids-limit", "256", "--cpus", "2",
+                   "--memory", "1g", "--memory-swap", "1g",
+                   "--mount", f"type=bind,src={root},dst={root}",
+                   "-w", str(root), "-e", "HOME=/tmp"]
+        if docker_socket:
+            options += ["--mount",
+                        "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock"]
+        if scratch is not None:
+            scratch_path = Path(scratch).resolve()
+            options += ["--mount",
+                        f"type=bind,src={scratch_path},dst={scratch_path}"]
+        if hardware:
+            if script != "scripts/test-v11-rkmpp.sh" or not docker_socket:
+                raise RuntimeError("Only the pinned Memories matrix may receive hardware devices")
+            for device in ("/dev/mpp_service", "/dev/rga", "/dev/dma_heap", "/dev/dri"):
+                options += ["--device", device + ":" + device]
+            if Path("/dev/mali0").exists():
+                options += ["--device", "/dev/mali0:/dev/mali0"]
+        for key, value in sorted((env or {}).items()):
+            options += ["-e", key + "=" + str(value)]
+        options += ["--entrypoint", shell, image, script, *arguments]
+        try:
+            return command(options, timeout=timeout, log=log)
+        finally:
+            self.cleanup(name)
+
     def run(self, image, root, args, log, timeout=1800):
         self.verify()
         name = "rkmpp-maintainer-check-" + uuid.uuid4().hex[:12]
@@ -266,7 +335,7 @@ class Docker:
             self.run(self.config["go_image"], root, ["sh", "-ec",
                 'cd go-vod && test -z "$(gofmt -l .)" && go test -race ./... && go vet ./... && go build ./...'], log)
             self.run(self.config["php_image"], root, ["sh", "-ec", PHP_LINT_CHECK], log)
-            command(["sh", str(root / "scripts/test-v11-deploy-preflight.sh")], cwd=root, timeout=60, log=log)
+            self.source_script("memories", root, "scripts/test-v11-deploy-preflight.sh", log, timeout=60)
         else:
             self.run(node, root, ["node", "--check", "scripts/prepare-source.mjs"], log)
 
@@ -276,10 +345,13 @@ class Docker:
         if project == "fixture":
             command(["docker", "build", "-t", tag, str(root)], timeout=900, log=log)
         elif project == "memories":
-            command(["sh", "scripts/build-v11.sh"], cwd=root, timeout=7200, log=log,
-                    env={"MEMORIES_RKMPP_IMAGE": tag})
+            self.source_script("memories", root, "scripts/build-v11.sh", log,
+                               timeout=7200, docker_socket=True,
+                               env={"MEMORIES_RKMPP_IMAGE": tag})
         else:
-            command(["sh", "scripts/build.sh", "--image", tag], cwd=root, timeout=10800, log=log)
+            self.source_script("immich", root, "scripts/build.sh", log,
+                               arguments=("--image", tag), timeout=10800,
+                               docker_socket=True)
             # Exercise real FFmpeg fragments using the built candidate, not host FFmpeg.
             scratch = root.parent / "fragments"
             scratch.mkdir(exist_ok=True)
@@ -342,9 +414,11 @@ class Docker:
             from hardware_gate import validate_memories_matrix
             # The upstream fork's matrix builds its own separate smoke image and
             # invokes its compiled ffmpeg/core/api Go tests on real MPP/RGA.
-            command(["bash", "scripts/test-v11-rkmpp.sh", "--matrix"], cwd=root,
-                    env={"RKMPP_SMOKE_SKIP_BUILD": "1", "RKMPP_SMOKE_OUTPUT": str(scratch)},
-                    timeout=3600, log=log)
+            self.source_script("memories", root, "scripts/test-v11-rkmpp.sh", log,
+                               arguments=("--matrix",), timeout=3600,
+                               docker_socket=True, scratch=scratch, hardware=True,
+                               env={"RKMPP_SMOKE_SKIP_BUILD": "1",
+                                    "RKMPP_SMOKE_OUTPUT": str(scratch)})
             evidence = validate_memories_matrix(scratch)
             # The shipping runtime must contain precisely the smoke-tested engine.
             def extract_hash(image, filename):
