@@ -19,57 +19,54 @@ from schedule import wait_for_window
 from model_settings import memory_bytes, settings
 
 
-def hardware_checks(config, workspace, expected_image_id):
-    job=Path(workspace)/"jobs"/("hardware-"+uuid.uuid4().hex[:8])
+def hardware_checks(config, workspace, repair_result):
+    """Qualify the repaired shipping image through the release hardware gate.
+
+    The separate v11-smoke tag is rebuilt alongside a shipping image, but its
+    identity alone proves nothing about the binary that would be exported.
+    Docker.hardware runs the three RKMPP suites and compares both go-vod
+    binaries byte-for-byte. Do not qualify a floating smoke tag independently.
+    """
+    workspace = Path(workspace).resolve()
+    repair_job = Path(repair_result.get("job", "")).resolve()
+    root = (repair_job / "source").resolve()
+    tag = repair_result.get("image")
+    expected_id = repair_result.get("image_id")
+    if (repair_result.get("status") != "passed" or
+            repair_job.parent != (workspace / "jobs").resolve() or
+            root.parent != repair_job or not root.is_dir() or
+            not isinstance(tag, str) or
+            not re.fullmatch(r"local/memories-rkmpp:repair-qualified-[a-f0-9]{8}", tag) or
+            not isinstance(expected_id, str) or
+            not re.fullmatch(r"sha256:[a-f0-9]{64}", expected_id)):
+        raise RuntimeError("Hardware qualification requires an exact successful repaired image")
+
+    job = workspace / "jobs" / ("hardware-" + uuid.uuid4().hex[:8])
     job.mkdir(parents=True)
-    result={"status":"running","kind":"offline-radxa-hardware-qualification","job":str(job),"tests":{}}
-    save_json(job/"result.json",result)
+    result = {"status": "running", "kind": "repaired-shipping-image-hardware-qualification",
+              "job": str(job), "source_job": str(repair_job),
+              "image": tag, "expected_image_id": expected_id}
+    save_json(job / "result.json", result)
     try:
-        with job_budget(config,workspace):
-            docker=Docker(config,workspace)
+        with job_budget(config, workspace):
+            docker = Docker(config, workspace)
             docker.verify()
-            image="local/memories-rkmpp:v11-smoke"
-            result["image_id"]=command(["docker","image","inspect",image,"--format","{{.Id}}"],timeout=30)
-            if result["image_id"]!=expected_image_id:
-                raise RuntimeError("Hardware test image changed after the qualified source build")
-            cache=job/"cache"
-            cache.mkdir()
-            # The pinned go-vod image sets TMPDIR=/cache/tmp. Go testing.T.TempDir
-            # fails before any VPU check if that directory does not exist.
-            # Create it inside this isolated job cache, never in host Docker.
-            temporary=cache/"tmp"
-            temporary.mkdir(mode=0o1777)
-            temporary.chmod(0o1777)
-            devices=["/dev/mpp_service","/dev/rga","/dev/dma_heap","/dev/dri","/dev/mali0"]
-            for suite,extra in [("ffmpeg","TestSegmentArgsRestartFMP4"),("core","TestFMP4SeekRestart"),("api",None)]:
-                name="rkmpp-maintainer-hardware-"+uuid.uuid4().hex[:12]
-                selection="^(TestRKMPPHardware.*"+("|"+extra if extra else "")+")$"
-                args=["docker","run","--rm","--name",name,"--label","rkmpp.maintainer.transient=true",
-                    "--network","none","--read-only","--cap-drop","ALL","--security-opt","no-new-privileges",
-                    "--security-opt","systempaths=unconfined","--pids-limit","256","--cpus","4",
-                    "--memory","4g","--memory-swap","4g","--user","0:0",
-                    "--tmpfs","/tmp:rw,nosuid,nodev,size=64m,mode=1777",
-                    "--mount","type=bind,src="+str(cache)+",dst=/cache"]
-                for dev in devices:args += ["--device",dev+":"+dev]
-                args += ["-e","MEMORIES_RKMPP_HW_TEST=1","--entrypoint","/app/"+suite+".test",
-                         image,"-test.run",selection,"-test.v","-test.timeout","5m"]
-                try:
-                    output=command(args,timeout=420,log=job/(suite+".log"))
-                finally:
-                    docker.cleanup(name)
-                with (job/(suite+".log")).open() as handle:
-                    passed=sum(bool(re.search(r"--- PASS: TestRKMPPHardware",line)) for line in handle)
-                if not passed or "warning: no tests to run" in output:
-                    raise RuntimeError("Hardware suite did not execute passing tests: "+suite)
-                result["tests"][suite]={"status":"passed","hardware_pass_records":passed}
-                save_json(job/"result.json",result)
-            result["status"]="passed"
+            observed_id = command(["docker", "image", "inspect", tag,
+                                   "--format", "{{.Id}}"], timeout=30)
+            if observed_id != expected_id:
+                raise RuntimeError("Repaired shipping image changed before hardware qualification")
+            evidence = docker.hardware("memories", root, tag, job / "hardware.log")
+            if (not isinstance(evidence, dict) or evidence.get("ok") is not True or
+                    evidence.get("image_id") != expected_id or
+                    not evidence.get("go_vod_sha256")):
+                raise RuntimeError("Hardware matrix did not prove shipping binary identity")
+            result.update(status="passed", image_id=expected_id, hardware_qualification=evidence)
     except Exception as error:
-        result.update(status="failed",error=str(error))
-        (job/"error.txt").write_text(traceback.format_exc())
+        result.update(status="failed", error=str(error))
+        (job / "error.txt").write_text(traceback.format_exc())
     finally:
-        result["finished_at"]=datetime.datetime.now(datetime.timezone.utc).isoformat()
-        save_json(job/"result.json",result)
+        result["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        save_json(job / "result.json", result)
     return result
 
 
@@ -127,7 +124,7 @@ def run_suite(config, workspace, profile="coding", ignore_window=False, cases=No
             base_ref="d6a9471dfbd3dd721bd67698c062ddcc773e232c",source_version="11.1.1",model_profile=profile),"built"),
         ("real-go-repair",lambda:real_repair(config,workspace,model_profile=profile),"passed"),
         ("hardware",lambda:hardware_checks(config,workspace,
-            state["steps"]["real-go-repair"]["result"]["hardware_test_image_id"]),"passed"),
+            state["steps"]["real-go-repair"]["result"]),"passed"),
         # An actual upgrade rehearsal: current fork main already targets 3.4.1.
         # Starting at main would fail before the LLM with "target not newer".
         # This immutable 3.4.0 baseline is the parent of the 3.4.1 release PR.

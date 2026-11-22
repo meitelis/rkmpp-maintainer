@@ -120,8 +120,6 @@ def real_repair(config, workspace, model_profile="coding"):
             docker.checks("memories", root, job / "checks.log")
             tag = "local/memories-rkmpp:repair-qualified-" + job.name[-8:]
             docker.build("memories", root, tag, job / "build.log")
-            result["hardware_test_image_id"] = command(["docker","image","inspect",
-                "local/memories-rkmpp:v11-smoke","--format","{{.Id}}"],timeout=30)
             result.update(status="passed", source_edit_verified=True, image=tag,
                           image_id=docker.export(tag, job / "image.tar"), agent_review=review)
             (job / "repair.diff").write_text("".join(difflib.unified_diff(broken.splitlines(True), source.read_text().splitlines(True))))

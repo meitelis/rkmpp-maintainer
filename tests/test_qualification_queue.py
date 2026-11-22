@@ -1,6 +1,5 @@
 import contextlib
 import json
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,30 +38,66 @@ class QualificationQueueTests(unittest.TestCase):
             self.assertEqual(stored["next_step"],"later")
             later.assert_not_called()
 
-    def test_hardware_runner_prepares_writable_go_tmpdir_before_tests(self):
-        """A missing /cache/tmp must not abort all Go hardware tests."""
+    def test_hardware_gate_checks_the_exact_repaired_shipping_image(self):
         with tempfile.TemporaryDirectory() as temp:
-            observed=[]
-            def fake_command(args, **kwargs):
-                if args[:3] == ["docker", "image", "inspect"]:
-                    return "sha256:qualified"
-                self.assertEqual(args[:2], ["docker", "run"])
-                mount=next(item for item in args if item.startswith("type=bind,src="))
-                cache=Path(mount.removeprefix("type=bind,src=").removesuffix(",dst=/cache"))
-                temporary=cache/"tmp"
-                self.assertTrue(temporary.is_dir())
-                self.assertEqual(stat.S_IMODE(temporary.stat().st_mode), 0o1777)
-                observed.append(temporary)
-                Path(kwargs["log"]).write_text("--- PASS: TestRKMPPHardwareFixture (0.01s)\\n")
-                return "--- PASS: TestRKMPPHardwareFixture (0.01s)"
-            with patch("qualification_queue.Docker") as docker, \
+            workspace = Path(temp)
+            source_job = workspace / "jobs" / "memories-repair-0123abcd"
+            (source_job / "source").mkdir(parents=True)
+            image_id = "sha256:" + "a" * 64
+            tag = "local/memories-rkmpp:repair-qualified-0123abcd"
+            repaired = {"status": "passed", "job": str(source_job),
+                        "image": tag, "image_id": image_id}
+            evidence = {"ok": True, "image_id": image_id,
+                        "go_vod_sha256": "b" * 64, "passed": 12}
+            with patch("qualification_queue.Docker") as docker_class, \
                  patch("qualification_queue.job_budget", side_effect=lambda *a, **k: contextlib.nullcontext()), \
-                 patch("qualification_queue.command", side_effect=fake_command):
-                result=hardware_checks({},Path(temp),"sha256:qualified")
-                self.assertEqual(result["status"],"passed",result.get("error"))
-                self.assertEqual(len(result["tests"]),3)
-                self.assertEqual(len(observed),3)
-                docker.return_value.verify.assert_called_once()
+                 patch("qualification_queue.command", return_value=image_id) as command:
+                docker_class.return_value.hardware.return_value = evidence
+                result = hardware_checks({}, workspace, repaired)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["image_id"], image_id)
+            self.assertEqual(result["hardware_qualification"], evidence)
+            command.assert_called_once_with(
+                ["docker", "image", "inspect", tag, "--format", "{{.Id}}"], timeout=30)
+            args = docker_class.return_value.hardware.call_args.args
+            self.assertEqual(args[:3], ("memories", source_job / "source", tag))
+            self.assertEqual(args[3].name, "hardware.log")
+            self.assertNotIn("v11-smoke", str(args))
+
+    def test_hardware_gate_rejects_mismatched_shipped_binary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            source_job = workspace / "jobs" / "memories-repair-0123abcd"
+            (source_job / "source").mkdir(parents=True)
+            image_id = "sha256:" + "a" * 64
+            repaired = {"status": "passed", "job": str(source_job),
+                        "image": "local/memories-rkmpp:repair-qualified-0123abcd",
+                        "image_id": image_id}
+            with patch("qualification_queue.Docker") as docker_class, \
+                 patch("qualification_queue.job_budget", side_effect=lambda *a, **k: contextlib.nullcontext()), \
+                 patch("qualification_queue.command", return_value=image_id):
+                docker_class.return_value.hardware.return_value = {
+                    "ok": True, "image_id": image_id, "passed": 12}
+                result = hardware_checks({}, workspace, repaired)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("shipping binary identity", result["error"])
+
+    def test_hardware_gate_rejects_stale_shipping_tag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            source_job = workspace / "jobs" / "memories-repair-0123abcd"
+            (source_job / "source").mkdir(parents=True)
+            image_id = "sha256:" + "a" * 64
+            repaired = {"status": "passed", "job": str(source_job),
+                        "image": "local/memories-rkmpp:repair-qualified-0123abcd",
+                        "image_id": image_id}
+            with patch("qualification_queue.Docker") as docker_class, \
+                 patch("qualification_queue.job_budget", side_effect=lambda *a, **k: contextlib.nullcontext()), \
+                 patch("qualification_queue.command", return_value="sha256:" + "c" * 64):
+                result = hardware_checks({}, workspace, repaired)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("changed before", result["error"])
+            docker_class.return_value.hardware.assert_not_called()
 
     def test_immich_qualification_is_an_isolated_historical_replay(self):
         """Never try to upgrade the current 3.4.1 fork to itself."""
@@ -73,7 +108,7 @@ class QualificationQueueTests(unittest.TestCase):
                  patch("qualification_queue.runtime_checks",return_value={"status":"passed"}), \
                  patch("qualification_queue.smoke",return_value={"status":"ready"}), \
                  patch("qualification_queue.real_repair",return_value={
-                     "status":"passed","hardware_test_image_id":"sha256:fixture"}), \
+                     "status":"passed","image_id":"sha256:fixture"}), \
                  patch("qualification_queue.hardware_checks",return_value={"status":"passed"}), \
                  patch("qualification_queue.qualified_model_memory",return_value=123), \
                  patch("qualification_queue.run_job",return_value={"status":"built"}) as jobs:
