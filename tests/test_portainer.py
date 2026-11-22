@@ -14,6 +14,12 @@ class PortainerTests(unittest.TestCase):
         stack = (root / "portainer-stack.yml").read_text()
         self.assertIn('AUTO_UPDATE: ${AUTO_UPDATE:-false}', stack)
         self.assertIn('AUTO_PUBLISH: ${AUTO_PUBLISH:-false}', stack)
+        self.assertIn('QUALIFICATION_ENABLED: ${QUALIFICATION_ENABLED:-false}', stack)
+        self.assertIn('entrypoint: ["python3", "/opt/maintainer/qualification_queue.py"]', stack)
+        qualifier = stack.split('  qualifier:', 1)[1].split('\nnetworks:', 1)[0]
+        self.assertIn('restart: unless-stopped', qualifier)
+        self.assertNotIn('GITHUB_TOKEN:', qualifier)
+        self.assertNotIn('MODEL_ENDPOINT:', qualifier)
         conf = json.loads((root / "config.json").read_text())
         self.assertEqual(conf["poll_seconds"], 86400)
         self.assertEqual(conf["work_window"]["timezone"], "Europe/Dublin")

@@ -60,6 +60,7 @@ Only the **Portainer** stack manages the running services. Do not run host
 | `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=false` | **Idle:** no upstream release requests, candidate builds or publishing |
 | `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=true` | Check on startup and at Dublin-local midnight; prepare candidates only in **00:00–08:00** when host CPU/RAM is idle |
 | `AUTO_PUBLISH=false` | Keep verified candidates locally; **no GitHub PR** |
+| `QUALIFICATION_ENABLED=false` | Supervised qualifier stays idle until explicitly enabled |
 | `AUTO_PUBLISH=true` | Request a candidate PR only after checks/hardware qualification; requires a narrowly scoped `GITHUB_TOKEN`. **Do not enable before execution isolation is qualified.** |
 
 New heavy jobs must satisfy the night window, CPU/load thresholds and RAM
@@ -105,12 +106,32 @@ docker image inspect local/rkmpp-maintainer:pr10 --format '{{.Id}}'
 docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile coding --ignore-window
 ```
 
-The two IDs must match. A `status: ready` **smoke** verifies only the
-controlled repair exercise. For larger on-board qualification, use
-`python3 /opt/maintainer/qualification_queue.py --model-profile coding`
-from the maintainer Console and inspect retained evidence. This includes
-historical replay fixtures; it does **not** certify a future release
-without its own source and hardware tests.
+The two IDs must match. A `status: ready` **smoke** verifies only a controlled
+repair exercise.
+
+### Supervised qualification (opt-in)
+
+The Portainer stack now includes a separate `qualifier` service running the
+same local image **without a GitHub token**. Set `QUALIFICATION_ENABLED=true`
+in the Portainer stack environment to start it; the default false stays idle.
+Use the PR #10 stack definition, not the older main version. There is no need
+to launch another `docker exec -d` background worker.
+
+The worker is Docker's foreground process, so `restart: unless-stopped`
+revives it after a crash or host reboot. A dedicated lock prevents overlapping
+workers, including the currently running detached qualification. Every stage
+is admitted only in the Dublin 00:00–08:00 window and when host resources
+permit. Successful stages are checkpointed under
+`/workspace/qualifications/<identity>/result.json`. An interrupted stage
+may be safely retried once in a new isolated job after transient cleanup;
+a second interruption or a real test failure stops that revision and retains
+evidence. Completed revisions are not rerun. The container remains alive
+but idle after a terminal result, avoiding a restart loop.
+
+Inspect `docker logs rkmpp-maintainer-qualifier-1 --tail 50`, and the
+saved JSON under `/armbian/rkmpp-maintainer/data/qualifications/`.
+No deployment, application restart, or automatic PR merge is performed.
+Historical replay qualification alone cannot certify a future real release.
 
 ## Candidate delivery and acceptance
 

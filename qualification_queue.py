@@ -2,6 +2,7 @@
 import datetime
 import hashlib
 import json
+import os
 import re
 import time
 import traceback
@@ -17,6 +18,9 @@ from repair_check import real_repair
 from runner import Docker
 from schedule import wait_for_window
 from model_settings import memory_bytes, settings
+
+
+MAX_INTERRUPTED_STAGE_RETRIES = 1  # Crash-only; actual test failures never retry.
 
 
 def hardware_checks(config, workspace, repair_result):
@@ -136,13 +140,31 @@ def run_suite(config, workspace, profile="coding", ignore_window=False, cases=No
         "deployment_approved":False,"model_profile":profile,"window_override":ignore_window,"steps":{}}
     if state["status"] in {"failed","interrupted"}:
         raise RuntimeError("This qualification revision stopped; preserve evidence and review its failure before retrying: "+str(path))
+    if state["status"] == "qualified-for-candidate-preparation":
+        return state  # A completed revision never runs twice after a restart.
     try:
         for name,execute,expected in cases:
             previous=state["steps"].get(name,{})
-            if previous.get("status")=="passed":continue
-            if previous.get("status")=="running":
-                state.update(status="interrupted",error="Previous qualification worker stopped during "+name)
+            if previous.get("status") == "passed":
+                continue
+            if previous.get("status") == "failed":
+                state.update(status="failed", error="Persisted failed stage requires review: " + name)
                 break
+            if previous.get("status") == "running":
+                # Exclusive qualification lock plus isolated-daemon recovery must
+                # have succeeded before this crash-only retry is considered.
+                retries = state.setdefault("restart_retries", {}).get(name, 0)
+                if retries >= MAX_INTERRUPTED_STAGE_RETRIES:
+                    state.update(status="interrupted", error=(
+                        "Worker repeatedly stopped during " + name + "; evidence requires review"))
+                    break
+                state["restart_retries"][name] = retries + 1
+                state.setdefault("interruption_history", []).append({
+                    "step": name, "abandoned_step": previous,
+                    "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "action": "retry unfinished stage as a fresh isolated job"})
+                state["steps"].pop(name)
+                save_json(path, state)
             state.update(status="waiting",next_step=name)
             save_json(path,state)
             print(json.dumps({"qualification":key,"status":"waiting","next_step":name}),flush=True)
@@ -189,18 +211,55 @@ def run_suite(config, workspace, profile="coding", ignore_window=False, cases=No
     return state
 
 
-if __name__=="__main__":
-    import argparse,os
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-profile",choices=["coding","smoke"],default="coding")
-    parser.add_argument("--ignore-window",action="store_true")
-    args=parser.parse_args()
-    config=json.loads((Path(__file__).parent/"config.json").read_text())
-    workspace=Path(os.environ.get("WORKSPACE","/workspace"))
-    workspace.mkdir(parents=True,exist_ok=True)
-    with locked(workspace/"qualification.lock"):
-        with locked(workspace/"maintainer.lock"):
+def qualification_once(config, workspace, profile="coding", ignore_window=False):
+    """One run, never parallel to a detached or second supervised worker."""
+    workspace = Path(workspace).resolve()
+    with locked(workspace / "qualification.lock"):
+        with locked(workspace / "maintainer.lock"):
             recover_jobs(workspace)
-            Docker(config,workspace).reap()
-        result=run_suite(config,workspace,args.model_profile,args.ignore_window)
-        raise SystemExit(0 if result["status"]=="qualified-for-candidate-preparation" else 1)
+            Docker(config, workspace).reap()  # Inner daemon only.
+        return run_suite(config, workspace, profile, ignore_window)
+
+
+def supervise(config, workspace, profile="coding", enabled=False):
+    """Docker PID 1: restart after crash, remain idle after terminal outcome."""
+    if not enabled:
+        print(json.dumps({"status":"idle","reason":"QUALIFICATION_ENABLED=false"}), flush=True)
+    else:
+        while True:
+            try:
+                result = qualification_once(config, workspace, profile)
+                print(json.dumps({"status":result["status"],"report":result.get("report")}), flush=True)
+                break
+            except RuntimeError as error:
+                if str(error) == "Another maintainer job is running":
+                    print(json.dumps({"status":"busy","retry_seconds":60,
+                                      "reason":"Existing worker holds qualification or maintenance lock"}), flush=True)
+                    time.sleep(60)
+                    continue
+                print(json.dumps({"status":"blocked","reason":str(error)[:1000]}), flush=True)
+                break
+    # An on-failure restart policy would loop on bad inputs. Keep status visible
+    # instead; the operator can explicitly opt in on a new controller revision.
+    while True:
+        time.sleep(3600)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-profile", choices=["coding","smoke"], default="coding")
+    parser.add_argument("--ignore-window", action="store_true")
+    parser.add_argument("--serve", action="store_true", help="Run as Portainer foreground service")
+    args = parser.parse_args()
+    config = json.loads((Path(__file__).parent / "config.json").read_text())
+    workspace = Path(os.environ.get("WORKSPACE", "/workspace"))
+    workspace.mkdir(parents=True, exist_ok=True)
+    if args.serve:
+        if args.ignore_window:
+            parser.error("Supervised qualification cannot bypass the night/idle window")
+        supervise(config, workspace, args.model_profile,
+                  enabled=os.environ.get("QUALIFICATION_ENABLED") == "true")
+    else:
+        result = qualification_once(config, workspace, args.model_profile, args.ignore_window)
+        raise SystemExit(0 if result["status"] == "qualified-for-candidate-preparation" else 1)
