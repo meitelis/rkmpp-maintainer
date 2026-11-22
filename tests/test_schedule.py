@@ -81,7 +81,7 @@ class ScheduleTests(unittest.TestCase):
                  patch("maintainer.discover",return_value=records), \
                  patch("maintainer.admission",side_effect=[{"allowed":True},{"allowed":False,"reason":"08:00","retry_seconds":300}]), \
                  patch("maintainer.run_job",return_value={"status":"built","job":"first-job",
-                     "ready_to_deploy":True,"delivery":{"image_id":"sha256:qualified"}}) as run:
+                     "candidate_verified":True,"ready_to_deploy":False,"delivery":{"image_id":"sha256:qualified"}}) as run:
                 with self.assertRaises(SystemExit) as stopped:
                     maintainer.main()
             self.assertEqual(stopped.exception.code,2)

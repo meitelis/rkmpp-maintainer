@@ -1,5 +1,8 @@
 """Crash/restart qualification invariants, without a model or Docker daemon."""
 import contextlib
+import subprocess
+import sys
+import time
 import hashlib
 import json
 import tempfile
@@ -120,6 +123,63 @@ class QualificationSupervisorTests(unittest.TestCase):
             work.assert_not_called()
 
 
+
+    def test_real_sigkill_during_a_stage_recovers_exactly_once(self):
+        # This crosses a real OS process boundary: not a mocked running-step
+        # status. The first worker is killed while holding the stage lock.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            identity={"external_model_endpoint":False,"test":"real-process-kill"}
+            child = """
+import sys,time
+from pathlib import Path
+from unittest.mock import patch
+from qualification_queue import run_suite
+root=Path(sys.argv[1])
+identity={"external_model_endpoint":False,"test":"real-process-kill"}
+def completed():
+    (root/"completed.marker").write_text("exactly-once")
+    return {"status":"passed"}
+def hanging():
+    (root/"hanging.marker").write_text("started")
+    time.sleep(120)
+    return {"status":"passed"}
+with patch("qualification_queue.manifest",return_value=identity), \\
+     patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \\
+     patch("qualification_queue.qualified_model_memory",return_value=1):
+    run_suite({},root,cases=[("completed",completed,"passed"),
+                             ("interrupted",hanging,"passed")])
+"""
+            worker=subprocess.Popen([sys.executable,"-c",child,str(root)],
+                                    stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,
+                                    cwd=str(Path(__file__).resolve().parents[1]))
+            try:
+                for attempt in range(100):
+                    if (root/"hanging.marker").is_file():
+                        break
+                    if worker.poll() is not None:
+                        raise AssertionError("First qualifier process exited before interruption")
+                    time.sleep(0.05)
+                else:
+                    self.fail("First worker never entered the interrupted stage")
+                worker.kill()
+                worker.communicate(timeout=5)
+                self.assertNotEqual(worker.returncode,0)
+                completed=Mock(side_effect=AssertionError("Completed stage was replayed"))
+                rerun=Mock(return_value={"status":"passed"})
+                with patch("qualification_queue.manifest",return_value=identity), \\
+                     patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \\
+                     patch("qualification_queue.qualified_model_memory",return_value=1):
+                    result=run_suite({},root,cases=[
+                        ("completed",completed,"passed"),("interrupted",rerun,"passed")])
+                completed.assert_not_called()
+                rerun.assert_called_once()
+                self.assertEqual(result["status"],"qualified-for-candidate-preparation")
+                self.assertEqual(result["restart_retries"]["interrupted"],1)
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.communicate(timeout=5)
 
     def test_supervisor_failure_is_unhealthy_while_process_remains_up(self):
         with tempfile.TemporaryDirectory() as tmp:
