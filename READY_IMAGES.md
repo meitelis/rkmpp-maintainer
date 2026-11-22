@@ -73,9 +73,10 @@ triggered by a successful synthetic hardware test alone. A validated synthetic/h
 claim of universal smooth playback or guaranteed HDR visual fidelity on every
 phone/browser; real client behavior remains a final deployment acceptance step.
 
-Do not enable unattended image preparation until the new controller itself
-passes CI and a real board qualification cycle. The controller's
-`AUTO_UPDATE=false` default is retained.
+Automatic candidate preparation is enabled in the Git-managed stack,
+with night/idle admission and bounded retries. Each *new* candidate must
+still pass its own model/source/build/board/export gates. Production
+application deployment remains entirely manual.
 
 Owner-reviewed deployment is a separate state: `deployment_approved=false` and `ready_to_deploy=false` until the exact candidate passes human source review, live-client playback, and the owner-authorized merge. Candidate PRs start as drafts; an owner must mark the PR ready for review after those checks before invoking accept-deployment. Lessons are promoted only after this acceptance, never merely from CI or a hardware suite.
 

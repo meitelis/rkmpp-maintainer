@@ -52,8 +52,9 @@ a candidate. See [qualification](QUALIFICATION.md) and
   token-bearing controller. Where needed, they still have broad control over
   that **inner** Docker daemon, and hardware qualification may use privileged
   **inner** containers. This is risk reduction, **not a hostile-code sandbox**.
-  Keep automatic preparation and publication disabled until the revised
-  execution path and a full upgrade are qualified.
+  Automatic candidate preparation remains subject to independent checks,
+  bounded retries and manual deployment; new-release qualification is
+  measured on each candidate, never inferred from an earlier replay.
 
 ## Operation
 
@@ -66,10 +67,9 @@ Only the **Portainer** stack manages the running services. Do not run host
 | Setting | Behavior |
 | --- | --- |
 | `MAINTAINER_ACTION=idle` | No watcher; keeps Portainer Console jobs available |
-| `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=false` | **Idle:** no upstream release requests, candidate builds or publishing |
-| `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=true` | Check on startup and at Dublin-local midnight; prepare candidates only in **00:00–08:00** when host CPU/RAM is idle |
+| `MAINTAINER_ACTION=watch` (default) | Single foreground watcher checks stable upstream releases, prepares candidates only at Dublin midnight on an idle board |
+| `RELEASE_WATCH_ENABLED=false` | Optional Portainer environment override to stop discovery and candidate preparation |
 | `AUTO_PUBLISH=false` | Keep verified candidates locally; **no GitHub PR** |
-| `QUALIFICATION_ENABLED=true` (Git-stack default) | Runs the supervised qualification once when the night/idle gate permits; override to `false` in Portainer environment to disable |
 | `AUTO_PUBLISH=true` | Request a candidate PR only after checks/hardware qualification; requires a narrowly scoped `GITHUB_TOKEN`. **Do not enable before execution isolation is qualified.** |
 
 New heavy jobs must satisfy the night window, CPU/load thresholds and RAM
@@ -78,10 +78,11 @@ releases have bounded cooldown/retries; unexpected GitHub errors back off
 rather than restarting the container repeatedly. Daily wake-ups account
 for Irish daylight-saving changes.
 
-The stack defaults to **`AUTO_UPDATE=false` and `AUTO_PUBLISH=false`**
-until end-to-end qualification. Existing Portainer environment values take
-precedence over these defaults. Enabling `AUTO_UPDATE` never enables
-production deployment.
+The two-container stack defaults to **release watching enabled** and
+**automatic PR publication disabled**. Use `RELEASE_WATCH_ENABLED=false` to
+pause watching; older Portainer `AUTO_UPDATE=false` values are deliberately
+ignored by the Git Compose file to avoid silently disabling the requested
+release workflow. Neither setting enables production deployment.
 
 ## Build and deploy the maintainer (not your applications)
 
@@ -98,9 +99,10 @@ docker build -t local/rkmpp-maintainer:pr10 /armbian/rkmpp-maintainer
 
 In Portainer, update the existing `rkmpp-maintainer` stack using
 [`portainer-stack.yml`](portainer-stack.yml), with
-`pull_policy: never`. Recreate **only the maintainer service** without
-pulling the local image; preserve builder/data mounts, environment and
-all application containers. If Portainer loads the stack from Git,
+`pull_policy: never`. Recreate the maintainer service without
+pulling the local image; preserve builder/data mounts and all application
+containers. The old qualifier service will be removed. Check for an explicit
+`RELEASE_WATCH_ENABLED=false` or `MAINTAINER_ACTION=idle` Portainer override. If Portainer loads the stack from Git,
 its repository ref must match the intended branch until PR #10 merges
 (the pre-existing `main` ref is not automatically updated by building
 a different host checkout). See the
@@ -118,39 +120,25 @@ docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py 
 The two IDs must match. A `status: ready` **smoke** verifies only a controlled
 repair exercise.
 
-### Supervised qualification (opt-in)
+### Supervision and recovery
 
-The Portainer stack now includes a separate `qualifier` service running the
-same local image **without a GitHub token**. Set `QUALIFICATION_ENABLED=true`
-in the Portainer stack environment to start it; the Git-managed stack on this
-branch now defaults to true at the owner's request. Set an explicit false in
-Portainer's stack environment to disable it.
-Use the PR #10 stack definition, not the older main version. There is no need
-to launch another `docker exec -d` background worker.
+The **maintainer itself** is Docker's foreground service (PID 1), using
+`watch` and `restart: unless-stopped`. No separate qualifier container is
+needed for release preparation. The controller writes each in-flight attempt
+to persistent `/workspace/state.json` **before** starting expensive work.
+On a restart, an interrupted job is retained as evidence and retried with
+the same bounded cooldown/attempt limit. It starts a new candidate attempt,
+not a fake continuation of an interrupted model stream.
 
-The worker is Docker's foreground process, so `restart: unless-stopped`
-revives it after a crash or host reboot. A dedicated lock prevents overlapping
-workers, including the currently running detached qualification. Every stage
-is admitted only in the Dublin 00:00–08:00 window and when host resources
-permit. Successful stages are checkpointed under
-`/workspace/qualifications/<identity>/result.json`. An interrupted stage
-may be safely retried once in a new isolated job after transient cleanup;
-a second interruption or a real test failure stops that revision and retains
-evidence. Completed revisions are not rerun. The container remains alive
-but idle after a terminal result, avoiding a restart loop.
+Every **actual new-release candidate** still needs complete independent source
+checks, an ARM64 build, RK3588 hardware qualification and export verification.
+`qualification_queue.py` remains an optional *manual diagnostic* for testing
+the model/upgrade machinery; historical replays never establish that a new
+release is deployable.
 
-Portainer's Docker health check reports `unhealthy` if the worker fails, or
-if supervisor status is missing/corrupt. A disabled, waiting, or successfully
-completed worker is `healthy`; this indicates process status, **not** proof of
-model progress or finished qualification. Docker Compose does not by itself
-restart a running but unhealthy container.
+Inspect `docker logs rkmpp-maintainer-maintainer-1` and the persistent
+`/armbian/rkmpp-maintainer/data/jobs/` artifacts for results.
 
-Inspect `docker logs rkmpp-maintainer-qualifier-1 --tail 50`, and the
-saved JSON under `/armbian/rkmpp-maintainer/data/qualifications/`.
-No deployment, application restart, or automatic PR merge is performed.
-The historical transition replays target the **currently shipped integrations**:
-Memories 11.1.2 → 11.1.4 and Immich 3.4.1 → 3.4.2, using pinned earlier
-fork commits. They cannot certify a future real upstream release.
 
 ## Candidate delivery and acceptance
 

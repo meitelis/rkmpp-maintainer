@@ -47,16 +47,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Build the tested controller
         run: docker compose build maintainer
-      # Exercise the actual foreground Python entrypoint under Docker's
-      # restart policy, not only mocked supervisor functions.
-      - name: Docker qualifier survives restart without starting disabled work
+      # Test the deployed PID 1 watcher, not an unused diagnostic worker.
+      - name: Foreground watcher survives a Docker restart
         run: |
-          name=rkmpp-qualifier-ci
+          name=rkmpp-watcher-ci
           trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
           docker run -d --name "$name" --restart unless-stopped \
-            --entrypoint python3 -e QUALIFICATION_ENABLED=false \
-            local/rkmpp-maintainer:prototype-3-portainer \
-            /opt/maintainer/qualification_queue.py --serve --model-profile coding
+            --network none -e AUTO_UPDATE=false -e AUTO_PUBLISH=false \
+            local/rkmpp-maintainer:prototype-3-portainer watch
           sleep 1
           test "$(docker inspect -f '{{.State.Running}}' "$name")" = true
           docker logs "$name" 2>&1 | grep -F '"status": "idle"'
