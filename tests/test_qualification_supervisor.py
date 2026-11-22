@@ -167,8 +167,8 @@ with patch("qualification_queue.manifest",return_value=identity), \\
                 self.assertNotEqual(worker.returncode,0)
                 completed=Mock(side_effect=AssertionError("Completed stage was replayed"))
                 rerun=Mock(return_value={"status":"passed"})
-                with patch("qualification_queue.manifest",return_value=identity), \\
-                     patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \\
+                with patch("qualification_queue.manifest",return_value=identity), \
+                     patch("qualification_queue.wait_for_window",return_value={"allowed":True}), \
                      patch("qualification_queue.qualified_model_memory",return_value=1):
                     result=run_suite({},root,cases=[
                         ("completed",completed,"passed"),("interrupted",rerun,"passed")])
