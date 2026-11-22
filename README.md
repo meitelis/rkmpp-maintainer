@@ -1,164 +1,127 @@
 # RKMPP maintainer
 
-## Only deliverable: verified images
+A **Portainer-managed, local RK3588 release maintainer** for
+[memories-rkmpp](https://github.com/meitelis/memories-rkmpp) and
+[immich-rkmpp](https://github.com/meitelis/immich-rkmpp).
+It prepares update candidates; **you deploy running applications manually**.
 
-The maintainer **never deploys or merges** applications. It prepares Immich and Memories images, repairs failed source/build/hardware tests in bounded cycles, and exports **only independently hardware-qualified** candidate image archives. See [ready-to-deploy image gates](READY_IMAGES.md) for the exact acceptance checks, logs, exported image paths and limits. Real browser playback acceptance remains the owner's decision.
+## Contract
 
+`Detect → Compare → Reconcile → Repair → Test → Export`
 
-A **Portainer-managed Docker stack** for the 24 GB ROCK 5B+ that watches official Immich and Memories releases, adapts your RKMPP integrations with a local model, tests the result and exports candidate images. Application deployment stays manual.
+1. Detect newer **stable** upstream Memories/Immich releases against each fork's `main`.
+2. Reconcile known RKMPP integration files with official changes; use the local
+   coding model for bounded source-only repair. The model has file tools, **not a shell**.
+3. Run independent source/build checks and board-specific MPP/RGA/playback tests.
+   Retry a failed repair up to the configured limit; preserve evidence if it fails.
+4. Export a verified Docker `image.tar`, matching metadata and (for Memories)
+   the Nextcloud helper. Optionally open a GitHub PR for the reviewed candidate.
+5. **Stop.** Never modify the running Immich or Memories stack, and never
+   automatically merge a PR. After source review, manual deployment and actual
+   client playback checks, the owner may explicitly accept that exact image/PR.
 
-The Radxa installation belongs under **`/armbian/rkmpp-maintainer`**. Deploy, update, start and stop its services in **Portainer** using [portainer-stack.yml](portainer-stack.yml). The root `compose.yml` is for development and CI, not the Radxa deployment.
+A passing LLM report, Docker build or CI job is **not** sufficient to approve
+a candidate. See [qualification](QUALIFICATION.md) and
+[delivery gates](READY_IMAGES.md).
 
-This repository maintains both [memories-rkmpp](https://github.com/meitelis/memories-rkmpp) and [immich-rkmpp](https://github.com/meitelis/immich-rkmpp). Original source provenance is recorded in [SOURCE.md](SOURCE.md).
+## Current status and limitations
 
-## Folder layout
+- **Model:** pinned Qwen3-Coder-30B-A3B-Instruct **Q4_0**, CPU-only, 16K
+  context, four A76 cores (4–7), Q8_0 KV, no swap. The model cgroup is **18 GiB**,
+  the isolated Docker builder **19 GiB**; the host reserves another 1 GiB.
+- **Board evidence:** the actual default coding profile passed the protected
+  repair smoke `smoke-cffa6889` on 22 Nov 2026. Earlier matched Q4 CPU 16K
+  measurement: **14.94 prompt / 6.23 generation tok/s**, **17.13 GiB peak**,
+  no OOM. Tested NPU hybrids were slower; they are not the default.
+- **Not yet established:** sustained full-16K prompts, an end-to-end unattended
+  upgrade of both applications, and real production-client playback of a new
+  candidate. These need a separate on-board qualification; passing CI is not a
+  substitute.
+- **Trust boundary:** upstream source and LLM-readable diffs are untrusted.
+  Fork-supplied build/preflight/hardware scripts now execute in a disposable
+  container **inside the isolated Docker daemon**, not directly in the
+  token-bearing controller. Where needed, they still have broad control over
+  that **inner** Docker daemon, and hardware qualification may use privileged
+  **inner** containers. This is risk reduction, **not a hostile-code sandbox**.
+  Keep automatic preparation and publication disabled until the revised
+  execution path and a full upgrade are qualified.
 
-```text
-/armbian/rkmpp-maintainer/
-  portainer-stack.yml    Portainer deployment definition
-  config.json           Pinned model and runtime settings
-  data/
-    models/             Downloaded GGUF weights
-    jobs/               Candidate source, images, logs and results
-    monitor/            Release-monitor checkouts
-    state.json          Attempted release records
-  builder/              Isolated Docker daemon's images and build cache
-```
+## Operation
 
-Both persistent mounts are absolute paths under `/armbian`; they do not depend on Portainer's own checkout directory. The stack refuses missing host paths instead of silently using empty directories.
+The production source checkout is `/armbian/rkmpp-maintainer`. Its
+`data/` holds models, `jobs/` evidence, candidate archives, `monitor/`
+checkouts and release state; `builder/` holds the isolated daemon's cache.
+Only the **Portainer** stack manages the running services. Do not run host
+`docker compose up/down` against this stack.
 
-## Migrate the earlier home-directory installation
-
-Let any running smoke or historical-upgrade job finish first. Then run this **one-time preparation** from the legacy checkout:
-
-```sh
-cd ~/rkmpp-maintainer
-git pull --ff-only
-sudo bash scripts/migrate-to-portainer.sh
-```
-
-The script refuses an active job, a different source path or an existing `/armbian/rkmpp-maintainer` destination. It stops only the old external maintainer project, moves the complete checkout and downloaded workspace to `/armbian/rkmpp-maintainer`, copies the stopped builder's cache into `builder/` with its metadata, and builds the local controller image. The original cache volume is retained for rollback. It does not deploy a replacement stack through the CLI.
-
-If interrupted after the move, retain both copies of the builder cache and inspect the reported error before retrying preparation. Do not deploy Portainer against a partial cache copy. Existing Memories and Immich stacks are outside this migration.
-
-## New installation preparation
-
-If no legacy installation exists, prepare the directory and image on the Radxa:
-
-```sh
-cd /armbian
-git clone https://github.com/meitelis/rkmpp-maintainer.git
-cd rkmpp-maintainer
-mkdir -p data builder
-docker build -t local/rkmpp-maintainer:pr10 .
-```
-
-Building the image is a host preparation step. Portainer owns the running services.
-
-## Deploy in Portainer
-
-In the Radxa Docker Standalone environment, choose **Stacks → Add stack → Repository**:
-
-| Setting | Value |
+| Setting | Behavior |
 | --- | --- |
-| Stack name | `rkmpp-maintainer` |
-| Repository URL | `https://github.com/meitelis/rkmpp-maintainer` |
-| Reference | `refs/heads/main` |
-| Compose path | `portainer-stack.yml` |
-| `MAINTAINER_ACTION` | `watch` by default; set `idle` for manual Console jobs |
-| `AUTO_UPDATE` | `false` until a real upgrade and execution-isolation checks are qualified; **no polling when false** |
-| `DIND_STORAGE_DRIVER` | `overlay2` unless the existing builder used another driver |
+| `MAINTAINER_ACTION=idle` | No watcher; keeps Portainer Console jobs available |
+| `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=false` | **Idle:** no upstream release requests, candidate builds or publishing |
+| `MAINTAINER_ACTION=watch`, `AUTO_UPDATE=true` | Check on startup and at Dublin-local midnight; prepare candidates only in **00:00–08:00** when host CPU/RAM is idle |
+| `AUTO_PUBLISH=false` | Keep verified candidates locally; **no GitHub PR** |
+| `AUTO_PUBLISH=true` | Request a candidate PR only after checks/hardware qualification; requires a narrowly scoped `GITHUB_TOKEN`. **Do not enable before execution isolation is qualified.** |
 
-Disable image re-pulling for the locally built maintainer image. It is `local/rkmpp-maintainer:pr10` with `pull_policy: never`; this stack file has no build directive. Enter variables in Portainer or load the existing `.env` file there; Portainer does not automatically read `/armbian/rkmpp-maintainer/.env`.
+New heavy jobs must satisfy the night window, CPU/load thresholds and RAM
+headroom. In-flight jobs may finish after 08:00; later jobs defer. Failed
+releases have bounded cooldown/retries; unexpected GitHub errors back off
+rather than restarting the container repeatedly. Daily wake-ups account
+for Irish daylight-saving changes.
 
-Deploy the stack. Its control should show **Total**, with a healthy builder and running maintainer. No host Docker socket or host ports are mounted/published by this stack. The builder remains privileged, as in the tested prototype, and is intended for these trusted source repositories.
+The stack defaults to **`AUTO_UPDATE=false` and `AUTO_PUBLISH=false`**
+until end-to-end qualification. Existing Portainer environment values take
+precedence over these defaults. Enabling `AUTO_UPDATE` never enables
+production deployment.
 
-**RK3588 execution decision:** The default `coding` profile is **CPU-only Qwen3-Coder Q4_0 at 16K context**, using the exact pinned RKNN-disabled llama.cpp build that passed the board's Q4 CPU smoke test. Both tried RKNPU hybrid variants were slower. They remain opt-in diagnostic profiles, **not** the default. See [the measured hardware decision](RKNPU-HYBRID.md).
+## Build and deploy the maintainer (not your applications)
 
-## Run tests from Portainer
-
-With `MAINTAINER_ACTION=idle`, open the maintainer container's **Console**, select `/bin/sh`, and connect. The idle service does not own the job lock, so Console jobs can run without fighting a background monitor.
-
-First validate failure handling with the actual isolated daemon, then run the model repair:
-
-```sh
-python3 /opt/maintainer/maintainer.py runtime-check --wait-for-window
-python3 /opt/maintainer/maintainer.py smoke --wait-for-window
-```
-
-Coding uses **Qwen3-Coder-30B-A3B-Instruct Q4_0** (17,304,492,352 bytes), pinned to the exact GGUF revision and SHA-256 already qualified on the 24 GiB ROCK 5B+. It reuses the existing `/workspace/experiments/coder-rknpu2-20261119/coder-q4.gguf` after SHA-256 verification rather than downloading another 17 GB file. The server uses the **same RKNN-disabled binary** as the successful matched `hybrid_cpu` Q4 benchmark. It pins four Cortex-A76 cores (4–7), 16,384-token context, four inference/prompt threads, Q8_0 KV caches, flash attention, and bounded 128/64 batching. Its model cgroup is **18 GiB with no swap**, the existing Docker-in-Docker builder is **19 GiB with no swap**, and the host admission gate reserves another 1 GiB (thus 19 GiB MemAvailable is required to start a job). The model container verifies enforced memory/swap cgroups before serving. The non-thinking coding profile uses temperature 0.7, top-p 0.8, top-k 20, repeat penalty 1.05, and a 4096-token output cap. The model unloads before compilation. Unlike the previous Q3 settings, this exact Q4 benchmark configuration does not request prompt-cache/checkpoint overrides.
-
-The dense Qwen3.8-27B profile passed the small repair after cache tuning, then timed out on the larger Memories review on the Radxa. That result does not establish unattended-upgrade suitability. Its cached weights and failed-run evidence are retained.
-
-The **smoke control** remains Ornith-1.5-9B Q5_K_M so ordinary ARM64 CI can validate the controller within its smaller RAM allowance. `--model-profile coding` runs that same protected exercise with Qwen on the Radxa. Model-specific settings and identities are recorded separately; a control-model CI pass does not qualify the larger model.
-
-The smoke exercise contains a broken HTTP-option helper that checks only ffprobe support. The model must inspect the local file and its reference and repair the source so that options require support from both FFmpeg and ffprobe. Five protected behavioral tests cover mismatched capabilities, absent help, exact tokens, order and whitespace before image build/export. Untouched source fails. Success reports `kind: real-local-model-smoke`, `source_edit_verified: true` and `status: ready`; this alone is not release-upgrade qualification.
+The current development work is in
+[PR #10](https://github.com/meitelis/rkmpp-maintainer/pull/10).
+Until it merges, build its branch explicitly rather than accidentally
+building `main`:
 
 ```sh
-python3 /opt/maintainer/maintainer.py smoke --model-profile coding --wait-for-window
-python3 /opt/maintainer/repair_check.py --model-profile coding --wait-for-window
+git -c safe.directory=/armbian/rkmpp-maintainer -C /armbian/rkmpp-maintainer fetch origin codex/qwen-17g-board-admission-20261116
+git -c safe.directory=/armbian/rkmpp-maintainer -C /armbian/rkmpp-maintainer switch --detach FETCH_HEAD
+docker build -t local/rkmpp-maintainer:pr10 /armbian/rkmpp-maintainer
 ```
 
-The coding model sources are [Qwen's official coding-model card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct) and the [pinned Q4_0 GGUF file](https://huggingface.co/n00b001/Qwen3-Coder-30B-A3B-Instruct-Q4_0-GGUF/blob/6f416a66beacce7c45fce4a663b2a7d5ad00e0c0/qwen3-coder-30b-a3b-instruct-q4_0.gguf).
+In Portainer, update the existing `rkmpp-maintainer` stack using
+[`portainer-stack.yml`](portainer-stack.yml), with
+`pull_policy: never`. Recreate **only the maintainer service** without
+pulling the local image; preserve builder/data mounts, environment and
+all application containers. If Portainer loads the stack from Git,
+its repository ref must match the intended branch until PR #10 merges
+(the pre-existing `main` ref is not automatically updated by building
+a different host checkout). See the
+[one-time legacy migration script](scripts/migrate-to-portainer.sh)
+for older installations.
 
-For the historical Memories upgrade:
+Confirm the deployed image before testing:
 
 ```sh
-python3 /opt/maintainer/maintainer.py run --repo memories --target 11.1.2 --base-ref d6a9471dfbd3dd721bd67698c062ddcc773e232c --source-version 11.1.1
+docker inspect rkmpp-maintainer-maintainer-1 --format '{{.Image}}'
+docker image inspect local/rkmpp-maintainer:pr10 --format '{{.Id}}'
+docker exec rkmpp-maintainer-maintainer-1 python3 /opt/maintainer/maintainer.py smoke --model-profile coding --ignore-window
 ```
 
-This starts from the actual pre-upgrade fork, reconciles upstream changes, lets the coding-profile Qwen model inspect/adapt the candidate, then runs browser, Go race/vet/build, PHP and deployment checks before building/exporting the ARM64 engine. Results remain in `data/jobs/`. `prepare` runs only reconciliation; `run --no-agent` skips model adaptation for diagnosis.
+The two IDs must match. A `status: ready` **smoke** verifies only the
+controlled repair exercise. For larger on-board qualification, use
+`python3 /opt/maintainer/qualification_queue.py --model-profile coding`
+from the maintainer Console and inspect retained evidence. This includes
+historical replay fixtures; it does **not** certify a future release
+without its own source and hardware tests.
 
-The coding loop keeps an observation ledger even when old file contents leave its context. Unchanged repeated pages, diffs and file lists are flagged; a successful source edit resets the progress budget. After two duplicates or twelve actions without an edit, and during the final two turns, the model must complete a missing required observation, edit already-read source, complete its review, or report a specific blocker. During this restricted phase, observation tools may only access the exact outstanding required paths; unrelated reads remain forbidden. Required file and diff observations include every paginated line, with explicit continuation; a truncated first page cannot complete a required observation. An impossible minimum review budget fails before generation. Finishing requires explicit `review_complete=true`, empty blockers and the controller's required observations. Paths are scoped by tool: for example, Memories' `lib/Service/BinExt.php` is an **upstream** protocol file, not a file expected inside the local helper. An admitted pause or pending investigation fails the job even if the action was named `finish`. The prose contradiction check is conservative and cannot verify arbitrary natural-language claims.
+## Candidate delivery and acceptance
 
-Successful upgrade jobs now report **`status: built`**, **`review_status: pending-human-review`** and **`deployment_approved: false`**. Exit code zero means the checks/build/export completed, not that deployment was approved. `agent-review.json` records the model's self-report, actual observations and edit count. `ready` is reserved for the isolated smoke exercise. Historical replays are labeled `kind: historical-replay`: their deliberately old starting point may omit later fixes from your current branch, so they are not automatic replacements for the live service. Earlier job evidence is retained with its original result format.
+Qualified jobs retain `/workspace/jobs/<job>/result.json`,
+`image.tar`, checksums, logs, source patch and hardware reports.
+The owner reviews the PR/diff, imports the matching image, updates only
+the relevant app in Portainer, verifies live playback, and compares
+the running image ID with `result.json:image_id`.
 
-Jobs have a six-hour deadline across all repair rounds, a 2 GiB free-space reserve and build/export space preflights. Timeouts remove named transient check containers; recovery records interrupted jobs and reaps only this maintainer’s labeled orphan containers under its exclusive lock. `run-manifest.json` records controller source identity, model/runtime digests, configuration and limits. Failed smoke jobs retain structured results and errors. See [qualification requirements](QUALIFICATION.md).
-
-Model profiles resolve their own runtime and sampler settings. Each request records numeric token/timing counters and elapsed time; each model run records Docker/cgroup memory evidence before cleanup. Internal reasoning is not retained. The Q4 CPU-only 16K smoke `smoke-9c7b3557` completed a protected repair with 14.94 prompt / 6.23 generation tok/s, 17.13 GiB peak model memory, no OOM, against 4K Q4 CPU's 15.21 / 6.29 tok/s and 16.50 GiB. Previous hybrid and CPU-mapped expert hybrid were slower (4.41 and 4.33 generation tok/s). These figures qualify the **short smoke task**, not near-full 16K prompts or unattended release upgrades.
-
-## Overnight admission
-
-New heavy jobs are admitted only **00:00–08:00 Europe/Dublin**, with daylight-saving changes handled by the timezone database. An active job may finish after 08:00; another job must wait until the next window. Before admission, the board must be sufficiently idle: sampled CPU at most 25%, normalized load at most 0.3 and available RAM greater than the selected model ceiling plus 1 GiB headroom. Busy jobs retry admission after five minutes. The builder's low CPU share prioritizes other services when they become active.
-
-`watch` applies this gate to each candidate separately; outside the window it still performs lightweight release checks and wakes for the next opening. Manual heavy commands also respect the gate: `--wait-for-window` queues the command, while `--ignore-window` is an explicit manual/CI override. Waiting does not hold the maintenance job lock. Scheduling is enforced on the Radxa and continues independently of the laptop.
-
-## Opt-in nightly candidate preparation in Portainer
-
-The Git-managed Portainer stack defaults to `MAINTAINER_ACTION=watch` and `AUTO_UPDATE=false` **until a full release-upgrade and execution-isolation test is qualified**. Disabled now means *genuinely idle*: no pointless upstream polling, candidate builds or publications. After qualifying that boundary, explicitly set `AUTO_UPDATE=true`: the controller checks for new stable releases at the next **local midnight (Europe/Dublin)** and prepares candidates within the configured 00:00–08:00 idle window. The watcher aligns with local midnight (including DST), not an arbitrary six- or 24-hour timer from process start. If the host is busy, it retries on the short admission interval; an active job may finish beyond the window, but no new heavy job starts then. The controller creates candidates only; it never deploys running Immich/Memories containers. An explicit `MAINTAINER_ACTION=idle` enables manual Console jobs. **Values already saved in Portainer override these Git defaults**, so check both environment settings after updating. Changing GitHub code alone does not redeploy the local controller.
-
-Successful candidate builds are remembered. Failed builds retain logs and structured evidence, while failed candidate image tags and transient test containers are removed **only from the isolated builder**, never the host Docker installation. The watcher retries failures after a configurable cooldown (default one hour), with up to three attempts per release; exhausted failures require intervention. The watcher releases the job lock between polls. Android-only tags, prereleases and drafts are ignored. No automatic production deployment or merge occurs. Use **Logs** in Portainer to monitor it. For an explicit Console job, switch the service back to `idle` between jobs; do not interrupt a running upgrade by redeploying it.
-
-## Update the maintainer
-
-Pull the source and rebuild its local image under `/armbian`:
-
-```sh
-cd /armbian/rkmpp-maintainer
-git pull --ff-only
-docker build -t local/rkmpp-maintainer:pr10 .
-```
-
-Then update/redeploy the **existing stack in Portainer**, keeping its environment settings and disabling image re-pulling. Run validation from its Console. Do not use `docker compose up`, `down`, or `run` to manage the Portainer deployment. The one-time migration above is the exception that removes the legacy external project.
-
-## Candidate images and publication
-
-**Security boundary:** upstream source files and model-visible diffs are untrusted data. The coding model has bounded file actions and cannot directly run shell commands, edit protected tests or build scripts, or receive the GitHub token. Nevertheless, builds and tests subsequently **execute candidate code**, including hardware tests in privileged, network-isolated nested containers. No unit test or prompt instruction can prove that such untrusted executable code is harmless. Keep automatic build/publish disabled until a real upgrade is qualified and the execution isolation is reviewed. A candidate image and a PR always require manual review before deployment. 
-
-Built jobs save `image.tar`, `result.json`, source patches, review evidence and logs. Memories also exports `memories-helper.tar.gz`. A build and a model completion claim do not validate real RKMPP, browser, HDR or audio playback. Candidates need human source review and hardware testing before manual deployment through the existing application stacks in Portainer.
-
-For unattended source preparation **after full hardware and security/isolation qualification**, explicitly set `AUTO_UPDATE=true`; optionally enable `AUTO_PUBLISH=true` after verifying the GitHub token scope. Publishing remains off by default. Publication needs a fine-grained `GITHUB_TOKEN` scoped **only** to `meitelis/memories-rkmpp` and `meitelis/immich-rkmpp` (Contents and Pull Requests write, Contents/Checks read). Without `AUTO_PUBLISH`, watching builds only local candidates. If publishing is enabled without a token, the watcher fails closed *before* expensive work. GitHub credentials go to the maintainer controller environment alone, not the local LLM, Docker builder or repository scripts. Failed reviews or hardware tests never create a PR. A failed GitHub publication is marked `publication-pending` and retried without rebuilding the qualified image.
-
-## Accept a verified deployment and merge its exact PR
-
-After reviewing the candidate PR and importing the matching `image.tar`, change **only** your existing application service in Portainer, test real video startup/seek/quality switching and verify the running image ID on the host:
-
-```sh
-docker inspect memories-rkmpp --format '{{.Image}}'
-# Or: docker inspect immich_server --format '{{.Image}}'
-```
-
-The host reports the running image ID; it must equal `result.json:image_id`. In the maintainer container's Portainer Console, run the following **only after you explicitly accept both source changes and successful live playback**:
+Only then, **if a candidate PR was published**, the owner may explicitly
+authorize its merge from the maintainer Console:
 
 ```sh
 python3 /opt/maintainer/maintainer.py accept-deployment \
@@ -167,21 +130,11 @@ python3 /opt/maintainer/maintainer.py accept-deployment \
   --confirm-source-reviewed --confirm-live-playback
 ```
 
-The controller checks the retained job and hardware evidence, exact PR head SHA, unchanged fork `main`, and all GitHub CI check-runs before requesting a squash merge. It then deletes **only its own merged automation branch**, retaining GitHub PR history and local logs. A stale head, failed CI or mismatched image blocks merging. The controller cannot independently inspect your production app and will never infer playback success from `healthy`. No merge runs without these explicit owner confirmation flags. If CI fails, the branch changed, or live playback regresses, **do not accept**: keep the candidate PR for review and roll back the application in Portainer.
+The controller rechecks the exact PR head, CI results and image evidence
+before merging. Stale revisions or failed checks are rejected.
+A production rollback remains a manual Portainer operation.
 
-## Development and CI
-
-`compose.yml` uses a separate relative workspace and named builder volume for development/CI. These commands are for an isolated development checkout:
-
-```sh
-python3 -m unittest discover -s tests -v
-python3 -m py_compile *.py
-docker compose config --quiet
-docker compose -f portainer-stack.yml config --quiet
-bash -n scripts/migrate-to-portainer.sh
-docker compose run --build --rm maintainer smoke
-```
-
-CI runs the full Linux suite and real pinned-model smoke on ARM64. Source checks cover protected edits, credential isolation, process bounds, locking, reasoning/action separation, runtime limits, idle mode and a three-way upgrade fixture. CI first runs the full Linux checks, then actual daemon/PHP failure checks and the real model repair; downloadable evidence excludes model weights and image archives. A CI smoke pass is not a claim that the historical upgrade or hardware playback passed on the Radxa. Old Qwen2.5 results remain evidence for that older configuration.
-
-Sources: [Portainer stack deployment](https://docs.portainer.io/user/docker/stacks/add), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [Ornith model](https://huggingface.co/ornith-ai/Ornith-1.5-9B), [pinned GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-9B-GGUF/tree/abdd624b12ebf020b767fff532ff44fe552b28c3).
+Further details: [qualification and known failures](QUALIFICATION.md),
+[deliverable validation](READY_IMAGES.md), [CPU/NPU board evidence](RKNPU-HYBRID.md),
+[source provenance](SOURCE.md). Development/CI uses the separate root
+`compose.yml`; it is **not** the Portainer deployment manifest.
